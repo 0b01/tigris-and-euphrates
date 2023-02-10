@@ -1,7 +1,4 @@
 // game for tigris and euphrates
-
-use std::{rc::Rc, cell::RefCell};
-
 use packed_struct::prelude::*;
 
 const W: usize = 16;
@@ -825,11 +822,11 @@ impl Board {
 pub struct Cell {
     #[packed_field(bits="0..=2", ty="enum")]
     tile_type: TileType,
-    #[packed_field(bits="3..=4", ty="enum")]
+    #[packed_field(bits="3..=5", ty="enum")]
     player: Player,
-    #[packed_field(bits="5..=7", ty="enum")]
+    #[packed_field(bits="6..=8", ty="enum")]
     leader: Leader,
-    #[packed_field(bits="8..=9", ty="enum")]
+    #[packed_field(bits="9..=10", ty="enum")]
     terrain: Terrain,
 }
 
