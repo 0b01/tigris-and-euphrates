@@ -1,0 +1,3 @@
+[report]
+# coveralls = "coveralls_key"
+out = ["Html"]
