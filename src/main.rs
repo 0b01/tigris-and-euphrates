@@ -1,3 +1,10 @@
+use game::Board;
+
+use crate::game::{Game, PlayerState};
+
+pub mod game;
+
 fn main() {
-    println!("Hello, world!");
+    let g = Game::new();
+    dbg!(g);
 }
