@@ -230,7 +230,7 @@ impl Game {
                     },
                 }
             },
-            Action::ReplaceTile{red, black, green, blue} => {
+            Action::ReplaceTile(Tiles{red, black, green, blue}) => {
                 // confirm that the player has enough tiles
                 if curr_player.hand_red < red || curr_player.hand_black < black || curr_player.hand_green < green || curr_player.hand_blue < blue {
                     return Err(Error::NotEnoughTiles);
@@ -426,13 +426,13 @@ impl Game {
                     },
                 }
             },
-            Action::ReplaceTile{red, black, green, blue} => {
+            Action::ReplaceTile(t @ Tiles{red, black, green, blue}) => {
                 curr_player.hand_red -= red;
                 curr_player.hand_black -= black;
                 curr_player.hand_green -= green;
                 curr_player.hand_blue -= blue;
 
-                // redraw tiles
+                self.bag.player_draw(curr_player, t.sum());
             },
             Action::Pass => {},
         }
@@ -572,7 +572,7 @@ pub enum Action {
     AddSupport { conflict: Conflict, n: u8 },
     PlaceTile { to: Pos, tile_type: TileType },
     Leader { movement: Movement, leader: Leader},
-    ReplaceTile {red: u8, black: u8, green: u8, blue: u8},
+    ReplaceTile(Tiles),
     PlaceCatastrophe { to: Pos },
     Pass,
 }
