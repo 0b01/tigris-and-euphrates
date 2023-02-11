@@ -1,6 +1,4 @@
-use game::Board;
-
-use crate::game::{Game, PlayerState};
+use crate::game::Game;
 
 pub mod game;
 
