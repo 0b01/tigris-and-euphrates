@@ -45,7 +45,7 @@ impl minimax::Game for TigrisAndEuphrates {
     type M = TnEMove;
 
     fn generate_moves(state: &Self::S, moves: &mut Vec<Self::M>) {
-        let (_, action) = state.play_action_stack.last().unwrap();
+        let action = state.next_action();
         action.generate_moves(state, moves);
     }
 
@@ -62,14 +62,13 @@ impl minimax::Game for TigrisAndEuphrates {
     }
 
     fn is_my_turn(state: &Self::S) -> bool {
-        let (player, _) = state.play_action_stack.last().unwrap();
-        *player == Player::Player1
+        state.next_player() == Player::Player1
     }
 }
 
 impl PlayerAction {
     pub(crate) fn generate_moves(&self, state: &TnE, moves: &mut Vec<TnEMove>) {
-        let current_player = state.play_action_stack.last().map(|i|i.0).unwrap();
+        let current_player = state.next_player();
 
         match self {
             PlayerAction::AddSupport(tile_type) => {
@@ -100,16 +99,17 @@ impl PlayerAction {
 
                 for pos in state.board.find_empty_leader_space_next_to_red() {
                     for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
-                        // if let Some(from) = state.players.get_mut(current_player).get_leader(leader) {
-                        //     moves.push(TnEMove::new(state.clone(),
-                        //         Action::MoveLeader { movement: Movement::Move{from, to: pos}, leader},
-                        //     ));
-                        // } else {
+                        if let Some(from) = state.players.get_mut(current_player).get_leader(leader) {
+                            // moves.push(TnEMove::new(state.clone(),
+                            //     Action::MoveLeader { movement: Movement::Move{from, to: pos}, leader},
+                            // ));
+                        } else {
                             moves.push(TnEMove::new(state.clone(),
                                 Action::MoveLeader { movement: Movement::Place(pos), leader},
                             ));
-                        // }
-                        // withdraw
+                        }
+
+                        // TODO: withdraw
                     }
                 }
 
