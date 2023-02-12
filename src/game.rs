@@ -4,8 +4,8 @@ use packed_struct::prelude::*;
 const W: usize = 16;
 const H: usize = 11;
 
-#[derive(Debug)]
-pub struct Players([PlayerState; 2]);
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Players(pub [PlayerState; 2]);
 impl Players {
     pub fn get_mut(&self, player: Player) -> &mut PlayerState {
         match player {
@@ -20,16 +20,17 @@ impl Players {
     }
 }
 
-#[derive(Debug)]
-pub struct Game {
-    board: Board,
-    players: Players,
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TnE {
+    pub board: Board,
+    pub players: Players,
     bag: Tiles,
 
-    state: GameState,
+    pub state: GameState,
 
-    play_action_stack: Vec<(Player, PlayerAction)>,
+    pub play_action_stack: Vec<(Player, PlayerAction)>,
     player_turn: Player,
+    pub last_player: Player,
 
     /// Revolt
     internal_conflict: Option<Conflict>,
@@ -59,7 +60,7 @@ impl Kingdom {
             || self.blue_leader.is_some()
     }
 
-    fn get_leader_stats(&self, leader: Leader) -> Option<(Player, Pos, u8)> {
+    fn get_leader_info(&self, leader: Leader) -> Option<(Player, Pos, u8)> {
         match leader {
             Leader::Red => self.red_leader.map(|(p, pos)| (p, pos, self.red_tiles)),
             Leader::Black => self.black_leader.map(|(p, pos)| (p, pos, self.black_tiles)),
@@ -72,7 +73,7 @@ impl Kingdom {
 
 macro_rules! p1 {
     () => {
-        (Player::Player1, PlayerAction::Any)
+        (Player::Player1, PlayerAction::Normal)
     };
     ($i:expr) => {
         (Player::Player1, $i)
@@ -82,22 +83,22 @@ macro_rules! p1 {
 #[allow(unused)]
 macro_rules! p2 {
     () => {
-        (Player::Player2, PlayerAction::Any)
+        (Player::Player2, PlayerAction::Normal)
     };
     ($i:expr) => {
         (Player::Player2, $i)
     };
 }
 
-impl Default for Game {
+impl Default for TnE {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Game {
+impl TnE {
     pub fn new() -> Self {
-        let mut game = Game {
+        let mut game = TnE {
             board: Board::new(),
             players: Players([PlayerState::new(); 2]),
             state: GameState::Normal,
@@ -111,6 +112,7 @@ impl Game {
             player_turn: Player::Player1,
             internal_conflict: None,
             external_conflict: None,
+            last_player: Player::None,
         };
 
         // initial draw for players, each player draws 6 tiles
@@ -137,7 +139,7 @@ impl Game {
         };
 
         if !is_valid {
-            return Err(Error::InvalidAction(self.state));
+            return Err(Error::InvalidAction(self.state, action));
         }
 
         match action {
@@ -178,29 +180,8 @@ impl Game {
                 }
 
                 // the player must have the tile they are trying to add support with
-                let tile_type = conflict.leader.as_tile_type();
-                match tile_type {
-                    TileType::Red => {
-                        if curr_player.hand_red < n {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Black => {
-                        if curr_player.hand_black < n {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Green => {
-                        if curr_player.hand_green < n {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Blue => {
-                        if curr_player.hand_blue < n {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Empty => unreachable!(),
+                if curr_player.get_hand(tile_type) < n {
+                    return Err(Error::NotEnoughTiles);
                 }
             }
             Action::WarSelectLeader { leader } => {
@@ -228,34 +209,18 @@ impl Game {
                 if cell.leader != Leader::None {
                     return Err(Error::CannotPlaceOverLeader);
                 }
+                // cannot place over unclaimed treasure
+                if cell.terrain == Terrain::Treasure {
+                    return Err(Error::CannotPlaceOverTreasure);
+                }
             }
             Action::PlaceTile { to, tile_type } => {
                 let cell = self.board.get(to);
                 if cell.tile_type != TileType::Empty {
                     return Err(Error::CannotPlaceTileOverTile);
                 }
-                match tile_type {
-                    TileType::Blue => {
-                        if curr_player.hand_blue == 0 {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Green => {
-                        if curr_player.hand_green == 0 {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Red => {
-                        if curr_player.hand_red == 0 {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Black => {
-                        if curr_player.hand_black == 0 {
-                            return Err(Error::NotEnoughTiles);
-                        }
-                    }
-                    TileType::Empty => return Err(Error::InvalidTileType),
+                if curr_player.get_hand(tile_type) == 0 {
+                    return Err(Error::NotEnoughTiles);
                 }
 
                 // only blue can be and must be placed on river
@@ -270,7 +235,7 @@ impl Game {
                 }
 
                 // cannot join three kingdoms
-                if self.neighboring_kingdoms(to).len() as u8 > 2 {
+                if self.board.neighboring_kingdoms(to).len() as u8 > 2 {
                     return Err(Error::CannotJoinThreeKingdoms);
                 }
             }
@@ -373,7 +338,7 @@ impl Game {
                     c.defender_sent_support = true;
                 }
 
-                match c.leader.as_tile_type() {
+                match tile_type {
                     TileType::Red => curr_player.hand_red -= n,
                     TileType::Black => curr_player.hand_black -= n,
                     TileType::Green => curr_player.hand_green -= n,
@@ -382,14 +347,17 @@ impl Game {
                 }
 
                 if c.all_sent() {
-                    // TODO: resolve conflict
                     if c.is_internal {
+                        // internal conflict
                         let attacker_points = c.attacker_base_strength + c.attacker_support;
                         let defender_points = c.defender_base_strength + c.defender_support;
 
                         if attacker_points > defender_points {
                             // attacker wins, remove defender
-                            let defender_cell = self.board.get(c.attacker_pos);
+                            self.players
+                                .get_mut(c.defender)
+                                .set_leader(c.leader, None);
+                            let defender_cell = self.board.get(c.defender_pos);
                             defender_cell.leader = Leader::None;
                             defender_cell.player = Player::None;
                             self.players
@@ -397,6 +365,9 @@ impl Game {
                                 .add_score(c.leader.as_tile_type());
                         } else {
                             // defender wins, remove attacker
+                            self.players
+                                .get_mut(c.attacker)
+                                .set_leader(c.leader, None);
                             let attacker_cell = self.board.get(c.attacker_pos);
                             attacker_cell.leader = Leader::None;
                             attacker_cell.player = Player::None;
@@ -405,6 +376,8 @@ impl Game {
                                 .add_score(c.leader.as_tile_type());
                         }
                     } else {
+                        // external conflict
+                        // TODO: resolve conflict
                     }
 
                     // defender draws back to 6
@@ -432,18 +405,22 @@ impl Game {
             Action::PlaceCatastrophe { to } => {
                 let cell = self.board.get(to);
                 cell.terrain = Terrain::Catastrophe;
+                cell.leader = Leader::None;
+                cell.player = Player::None;
+                cell.tile_type = TileType::Empty;
+
                 curr_player.num_catastrophes -= 1;
             }
             Action::PlaceTile { to, tile_type } => {
                 let cell = self.board.get(to);
                 // get kingdoms around the to-be-placed tile
-                let kingdoms = self.neighboring_kingdoms(to);
+                let kingdoms = self.board.neighboring_kingdoms(to);
                 // 1. find if there's an external conflict, if it would unite kingdoms with same color leaders
                 let mut external_conflicts = vec![];
                 for leader in [Leader::Red, Leader::Black, Leader::Green, Leader::Blue] {
                     let leaders = kingdoms
                         .iter()
-                        .filter_map(|k| k.get_leader_stats(leader))
+                        .filter_map(|k| k.get_leader_info(leader))
                         .collect::<Vec<_>>();
                     if leaders.len() > 1 {
                         let (attacker, attacker_pos, attacker_base_strength) = leaders
@@ -515,103 +492,49 @@ impl Game {
                         }
                         TileType::Empty => unreachable!(),
                     }
-                    let scoring_player = kingdoms
+                    let matching_leader = kingdoms
                         .iter()
-                        .filter_map(|k| k.get_leader_stats(tile_type.as_leader()).map(|p| p.0))
-                        .next();
-                    if let Some(p) = scoring_player {
-                        self.players.get_mut(p).add_score(tile_type);
+                        .find_map(|k| k.get_leader_info(tile_type.as_leader())
+                        .map(|(p,_,_)| p));
+
+                    // if the matching leader is not in the kingdom, check if black leader is in the kingdom
+                    // and if so, score for black leader
+                    let black_leader = kingdoms
+                        .iter()
+                        .find_map(|k| k.get_leader_info(Leader::Black)
+                        .map(|(p,_,_)| p));
+
+                    match (matching_leader, black_leader) {
+                        (Some(p), _) |
+                        (None, Some(p)) => self.players.get_mut(p).add_score(tile_type),
+                        (None, None) => (),
                     }
                 }
             }
             Action::MoveLeader { movement, leader } => {
                 match movement {
                     Movement::Place(pos) => {
+                        self.check_internal_conflict(pos, leader, current_player, &mut next_state);
+
                         let cell = self.board.get(pos);
-
-                        // check internal conflict
-                        // if the kingdom already contains a leader, then an internal conflict is triggered
-                        let kingdoms = self.neighboring_kingdoms(pos);
-
-                        let mut has_conflict = None;
-                        for kingdom in kingdoms {
-                            has_conflict = match leader {
-                                Leader::Red if kingdom.red_leader.is_some() => kingdom.red_leader,
-                                Leader::Black if kingdom.black_leader.is_some() => {
-                                    kingdom.black_leader
-                                }
-                                Leader::Green if kingdom.green_leader.is_some() => {
-                                    kingdom.green_leader
-                                }
-                                Leader::Blue if kingdom.blue_leader.is_some() => {
-                                    kingdom.blue_leader
-                                }
-                                _ => None,
-                            };
-                        }
-
-                        if let Some((player_2, p2_pos)) = has_conflict {
-                            let attacker_base_strength =
-                                pos.neighbors()
-                                    .iter()
-                                    .map(|n| self.board.get(*n).tile_type)
-                                    .filter(|t| *t == TileType::Red)
-                                    .count() as u8;
-                            let defender_base_strength = p2_pos
-                                .neighbors()
-                                .iter()
-                                .map(|n| self.board.get(*n).tile_type)
-                                .filter(|t| *t == TileType::Red)
-                                .count()
-                                as u8;
-                            self.internal_conflict = Some(Conflict {
-                                is_internal: true,
-                                attacker: current_player,
-                                defender: player_2,
-                                leader,
-                                attacker_pos: pos,
-                                attacker_base_strength,
-                                defender_pos: p2_pos,
-                                attacker_support: 0,
-                                defender_support: 0,
-                                defender_base_strength,
-                                attacker_sent_support: false,
-                                defender_sent_support: false,
-                            });
-
-                            next_state = GameState::AddSupport;
-                            self.play_action_stack
-                                .push((current_player, PlayerAction::AddSupport(TileType::Red)));
-                        }
-
                         cell.leader = leader;
                         cell.player = current_player;
-                        match leader {
-                            Leader::Red => curr_player.has_red_leader = false,
-                            Leader::Black => curr_player.has_black_leader = false,
-                            Leader::Green => curr_player.has_green_leader = false,
-                            Leader::Blue => curr_player.has_blue_leader = false,
-                            _ => unreachable!(),
-                        }
+                        self.players.get_mut(current_player).set_leader(leader, Some(pos));
                     }
                     Movement::Move { from, to } => {
+                        self.check_internal_conflict(to, leader, current_player, &mut next_state);
+
+                        self.players.get_mut(current_player).set_leader(leader, Some(to));
                         let from_cell = self.board.get(from);
                         let to_cell = self.board.get(to);
                         from_cell.leader = Leader::None;
                         to_cell.player = from_cell.player;
                         from_cell.player = Player::None;
                         to_cell.leader = leader;
-                        // TODO: check internal conflict
                     }
                     Movement::Withdraw(pos) => {
                         let cell = &mut self.board.0[pos.x as usize][pos.y as usize];
-                        match cell.leader {
-                            Leader::Red => curr_player.has_red_leader = true,
-                            Leader::Black => curr_player.has_black_leader = true,
-                            Leader::Green => curr_player.has_green_leader = true,
-                            Leader::Blue => curr_player.has_blue_leader = true,
-                            _ => unreachable!(),
-                        }
+                        self.players.get_mut(current_player).set_leader(cell.leader, None);
                         cell.leader = Leader::None;
                         cell.player = Player::None;
                     }
@@ -637,11 +560,12 @@ impl Game {
 
         // check if treasure is available for taking
         for kingdom in self.board.kingdoms() {
-            if kingdom.treasures.len() > 1 && kingdom.green_leader.is_some() {
+            if kingdom.treasures.iter().filter(|i|i.is_some()).count() > 1 && kingdom.green_leader.is_some() {
                 let green_player = kingdom.green_leader.unwrap().0;
                 let treasures = kingdom.treasures.map(Option::unwrap);
                 self.play_action_stack
                     .push((green_player, PlayerAction::TakeTreasure(treasures)));
+                next_state = GameState::TakeTreasure;
             }
         }
 
@@ -651,6 +575,57 @@ impl Game {
         }
 
         next_state
+    }
+
+    fn check_internal_conflict(&mut self, pos: Pos, leader: Leader, current_player: Player, next_state: &mut GameState) {
+        // check internal conflict
+        // if the kingdom already contains a leader, then an internal conflict is triggered
+        let kingdoms = self.board.neighboring_kingdoms(pos);
+
+        let mut has_conflict = None;
+        for kingdom in kingdoms {
+            has_conflict = match leader {
+                Leader::Red if kingdom.red_leader.is_some() && kingdom.red_leader.unwrap().0 != current_player => kingdom.red_leader,
+                Leader::Black if kingdom.black_leader.is_some() && kingdom.black_leader.unwrap().0 != current_player => kingdom.black_leader,
+                Leader::Green if kingdom.green_leader.is_some() && kingdom.green_leader.unwrap().0 != current_player => kingdom.green_leader,
+                Leader::Blue if kingdom.blue_leader.is_some() && kingdom.blue_leader.unwrap().0 != current_player => kingdom.blue_leader,
+                _ => None,
+            };
+        }
+
+        if let Some((player_2, p2_pos)) = has_conflict {
+            let attacker_base_strength =
+                pos.neighbors()
+                    .iter()
+                    .map(|n| self.board.get(*n).tile_type)
+                    .filter(|t| *t == TileType::Red)
+                    .count() as u8;
+            let defender_base_strength = p2_pos
+                .neighbors()
+                .iter()
+                .map(|n| self.board.get(*n).tile_type)
+                .filter(|t| *t == TileType::Red)
+                .count()
+                as u8;
+            self.internal_conflict = Some(Conflict {
+                is_internal: true,
+                attacker: current_player,
+                defender: player_2,
+                leader,
+                attacker_pos: pos,
+                attacker_base_strength,
+                defender_pos: p2_pos,
+                attacker_support: 0,
+                defender_support: 0,
+                defender_base_strength,
+                attacker_sent_support: false,
+                defender_sent_support: false,
+            });
+
+            *next_state = GameState::AddSupport;
+            self.play_action_stack
+                .push((current_player, PlayerAction::AddSupport(TileType::Red)));
+        }
     }
 
     fn set_next_player_if_empty(&mut self) {
@@ -665,8 +640,8 @@ impl Game {
             };
             match self.bag.draw_to_6(curr_player) {
                 Some(()) => {
-                    self.play_action_stack.push((opposite, PlayerAction::Any));
-                    self.play_action_stack.push((opposite, PlayerAction::Any));
+                    self.play_action_stack.push((opposite, PlayerAction::Normal));
+                    self.play_action_stack.push((opposite, PlayerAction::Normal));
                     self.player_turn = opposite;
                 }
                 None => {
@@ -676,38 +651,22 @@ impl Game {
         }
     }
 
-    fn neighboring_kingdoms(&self, to: Pos) -> Vec<Kingdom> {
-        let mut kingdoms = vec![];
-        let mut visited = [[false; W]; H];
-        for neighbor in to.neighbors() {
-            if visited[neighbor.x as usize][neighbor.y as usize] {
-                continue;
-            }
-            let k = self.board.find_kingdom(neighbor, &mut visited);
-            if k.has_leader() {
-                kingdoms.push(k);
-            }
-        }
-        kingdoms
-    }
-
     pub fn process(&mut self, action: Action) -> Result<(Player, PlayerAction)> {
         let current_player = self.play_action_stack.iter().last().copied().unwrap().0;
         self.validate_action(action, current_player)?;
         let (current_player, _) = self.play_action_stack.pop().unwrap();
         self.state = self.process_action(action, current_player);
         self.set_next_player_if_empty();
+
+        self.last_player = current_player;
+
+        // check if game is over
         if self.state == GameState::GameOver {
             Err(Error::GameOver)
         } else {
             let ret = self.play_action_stack.iter().last().copied().unwrap();
             Ok(ret)
         }
-    }
-
-    #[must_use]
-    fn nearby_kingdoms_count(&self, pos: Pos) -> u8 {
-        self.neighboring_kingdoms(pos).len() as u8
     }
 
     #[must_use]
@@ -746,7 +705,7 @@ impl Game {
         }
 
         // a leader cannot join two kingdoms
-        if self.nearby_kingdoms_count(pos) > 1 {
+        if self.board.nearby_kingdoms_count(pos) > 1 {
             return Err(Error::CannotPlaceLeaderJoiningTwoKingdoms);
         }
 
@@ -775,6 +734,19 @@ impl Game {
 
         false
     }
+
+    pub fn winner(&self) -> Player {
+        let a = self.players.0[0].calculate_score();
+        let b = self.players.0[1].calculate_score();
+
+        if a > b {
+            Player::Player1
+        } else if b > a {
+            Player::Player2
+        } else {
+            Player::None
+        }
+    }
 }
 
 #[derive(Copy, PartialEq, Eq, Debug, Clone)]
@@ -795,7 +767,7 @@ pub enum PlayerAction {
         green: bool,
         black: bool,
     },
-    Any,
+    Normal,
     TakeTreasure([Pos; 2]),
 }
 
@@ -943,10 +915,24 @@ pub enum Movement {
     Withdraw(Pos),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Pos {
     pub x: u8,
     pub y: u8,
+}
+
+impl std::fmt::Debug for Pos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl std::fmt::Display for Pos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let col = (self.y as u8 + 'A' as u8) as char;
+        let row = self.x+1;
+        write!(f, "{}{}", row, col)
+    }
 }
 
 macro_rules! pos {
@@ -975,12 +961,12 @@ impl Pos {
 }
 
 #[repr(packed)]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct PlayerState {
-    pub has_red_leader: bool,
-    pub has_black_leader: bool,
-    pub has_green_leader: bool,
-    pub has_blue_leader: bool,
+    pub placed_red_leader: Option<Pos>,
+    pub placed_black_leader: Option<Pos>,
+    pub placed_green_leader: Option<Pos>,
+    pub placed_blue_leader: Option<Pos>,
 
     pub hand_green: u8,
     pub hand_red: u8,
@@ -999,10 +985,10 @@ pub struct PlayerState {
 impl PlayerState {
     pub fn new() -> Self {
         PlayerState {
-            has_black_leader: true,
-            has_red_leader: true,
-            has_green_leader: true,
-            has_blue_leader: true,
+            placed_black_leader: None,
+            placed_red_leader: None,
+            placed_green_leader: None,
+            placed_blue_leader: None,
 
             hand_green: 0,
             hand_red: 0,
@@ -1081,9 +1067,43 @@ impl PlayerState {
             _ => (),
         }
     }
+
+    fn set_leader(&mut self, leader: Leader, arg: Option<Pos>) {
+        match leader {
+            Leader::Red => self.placed_red_leader = arg,
+            Leader::Black => self.placed_black_leader = arg,
+            Leader::Green => self.placed_green_leader = arg,
+            Leader::Blue => self.placed_blue_leader = arg,
+            _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn get_hand(&self, tile_type: TileType) -> u8 {
+        match tile_type {
+            TileType::Blue => self.hand_blue,
+            TileType::Green => self.hand_green,
+            TileType::Red => self.hand_red,
+            TileType::Black => self.hand_black,
+            TileType::Empty => unreachable!(),
+        }
+    }
+
+    pub fn get_leader(&self, leader: Leader) -> Option<Pos> {
+        match leader {
+            Leader::None => unreachable!(),
+            Leader::Blue => self.placed_blue_leader,
+            Leader::Green => self.placed_green_leader,
+            Leader::Red => self.placed_red_leader,
+            Leader::Black => self.placed_black_leader,
+        }
+    }
+
+    pub(crate) fn score_sum(&self) -> u8 {
+        self.score_black + self.score_red + self.score_green + self.score_blue
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Board([[Cell; W]; H]);
 
 impl Default for Board {
@@ -1128,6 +1148,65 @@ impl Board {
 
     pub fn get(&self, pos: Pos) -> &mut Cell {
         unsafe { &mut *(&self.0[pos.x as usize][pos.y as usize] as *const Cell as *mut Cell) }
+    }
+
+    fn neighboring_kingdoms(&self, to: Pos) -> Vec<Kingdom> {
+        let mut kingdoms = vec![];
+        let mut visited = [[false; W]; H];
+        for neighbor in to.neighbors() {
+            if visited[neighbor.x as usize][neighbor.y as usize] {
+                continue;
+            }
+            let k = self.find_kingdom(neighbor, &mut visited);
+            if k.has_leader() {
+                kingdoms.push(k);
+            }
+        }
+        kingdoms
+    }
+
+    #[must_use]
+    fn nearby_kingdoms_count(&self, pos: Pos) -> u8 {
+        self.neighboring_kingdoms(pos).len() as u8
+    }
+
+    pub fn find_empty_leader_space_next_to_red(&self) -> Vec<Pos> {
+        let mut ret = Vec::new();
+        for x in 0..H {
+            for y in 0..W {
+                if self.0[x][y].tile_type == TileType::Red {
+                    for pos in pos!(x as u8, y as u8).neighbors() {
+                        if self.nearby_kingdoms_count(pos) > 1 {
+                            continue;
+                        }
+
+                        let cell = self.get(pos);
+                        if cell.tile_type == TileType::Empty
+                        && cell.terrain != Terrain::River
+                        && cell.terrain != Terrain::Catastrophe
+                        && cell.leader == Leader::None {
+                            ret.push(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        ret
+    }
+
+    pub fn find_catastrophe_positions(&self) -> Vec<Pos> {
+        let mut ret = Vec::new();
+        for x in 0..H {
+            for y in 0..W {
+                let cell = self.0[x][y];
+                if cell.leader == Leader::None && cell.tile_type != TileType::Empty && cell.terrain != Terrain::Treasure {
+                    ret.push(pos!(x as u8, y as u8));
+                }
+            }
+        }
+
+        ret
     }
 
     fn find_kingdom(&self, pos: Pos, visited: &mut [[bool; W]; H]) -> Kingdom {
@@ -1193,7 +1272,7 @@ impl Board {
     }
 
     /// find all the kingdoms on the board
-    fn kingdoms(&self) -> Vec<Kingdom> {
+    pub fn kingdoms(&self) -> Vec<Kingdom> {
         let mut visited = [[false; W]; H];
         let mut kingdoms = vec![];
         for x in 0..H {
@@ -1222,9 +1301,58 @@ impl Board {
 
         c
     }
+
+    pub fn find_empty_spaces_adj_kingdom(&self, pos: Pos, is_river_space: bool) -> Vec<Pos> {
+        let mut ret = Vec::new();
+        let mut kingdom = [[false; W]; H];
+        let mut stack = vec![pos];
+
+        // if it's connectable, mark as kingdom
+        while let Some(pos) = stack.pop() {
+            if kingdom[pos.x as usize][pos.y as usize] {
+                continue;
+            }
+
+            let cell = self.get(pos);
+            if !cell.is_connectable() {
+                continue;
+            }
+
+            kingdom[pos.x as usize][pos.y as usize] = true;
+
+            for neighbor_pos in pos.neighbors() {
+                stack.push(neighbor_pos);
+            }
+        }
+
+        // find empty spaces around kingdom
+        for x in 0..H {
+            for y in 0..W {
+                if kingdom[x][y] {
+                    for pos in pos!(x as u8, y as u8).neighbors() {
+                        let cell = self.get(pos);
+                        if cell.tile_type == TileType::Empty
+                        && cell.leader == Leader::None {
+                            if is_river_space {
+                                if cell.terrain == Terrain::River {
+                                    ret.push(pos);
+                                }
+                            } else {
+                                if cell.terrain != Terrain::River {
+                                    ret.push(pos);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        ret
+    }
 }
 
-#[derive(PackedStruct, Copy, Clone, Debug)]
+#[derive(PackedStruct, Copy, Clone, Debug, Eq, PartialEq)]
 #[packed_struct(bit_numbering = "msb0")]
 pub struct Cell {
     #[packed_field(bits = "0..=2", ty = "enum")]
@@ -1234,7 +1362,7 @@ pub struct Cell {
     #[packed_field(bits = "6..=8", ty = "enum")]
     leader: Leader,
     #[packed_field(bits = "9..=10", ty = "enum")]
-    terrain: Terrain,
+    pub terrain: Terrain,
 }
 
 impl Cell {
@@ -1291,7 +1419,7 @@ pub enum Leader {
 }
 
 impl Leader {
-    fn as_tile_type(&self) -> TileType {
+    pub fn as_tile_type(&self) -> TileType {
         match self {
             Leader::Blue => TileType::Blue,
             Leader::Green => TileType::Green,
@@ -1302,7 +1430,7 @@ impl Leader {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq)]
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Terrain {
     Empty,
     Treasure,
@@ -1334,9 +1462,10 @@ pub enum Error {
     CannotMoveOtherLeader,
     InConflict,
     AlreadySentSupport,
-    InvalidAction(GameState),
+    InvalidAction(GameState, Action),
     NoTreasure,
     GameOver,
+    CannotPlaceOverTreasure,
 }
 
 #[cfg(test)]
@@ -1354,7 +1483,7 @@ mod tests {
 
     #[test]
     fn leader_must_be_placed_next_to_temples() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
         assert_eq!(game.play_action_stack, vec![p1!(), p1!()]);
         assert_eq!(game.players.get_mut(Player::Player1).hand_sum(), 6);
         let ret = game.process(Action::MoveLeader {
@@ -1369,12 +1498,12 @@ mod tests {
 
     #[test]
     fn leader_must_be_placed_next_to_temples_ok() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
         let ret = game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(0, 1)),
             leader: Leader::Black,
         });
-        assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Any));
+        assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Normal));
         let cell = game.board.get(pos!(0, 1));
         assert_eq!(cell.leader, Leader::Black);
         assert_eq!(cell.player, Player::Player1);
@@ -1383,7 +1512,7 @@ mod tests {
             movement: Movement::Place(pos!(1, 0)),
             leader: Leader::Red,
         });
-        assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Any));
+        assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Normal));
         let cell = game.board.get(pos!(1, 0));
         assert_eq!(cell.leader, Leader::Red);
         assert_eq!(cell.player, Player::Player1);
@@ -1454,7 +1583,7 @@ mod tests {
 
     #[test]
     fn internal_conflict() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
 
         // player 1 puts down black and red leaders
         game.process(Action::MoveLeader {
@@ -1505,14 +1634,10 @@ mod tests {
         );
 
         // player 2 can only add red support, trying to do anything else is an error
-        let ret = game.process(Action::MoveLeader {
+        game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(2, 1)),
             leader: Leader::Red,
-        });
-        assert_eq!(
-            ret.unwrap_err(),
-            Error::InvalidAction(GameState::AddSupport)
-        );
+        }).unwrap_err();
 
         // player 2 tries to add 6 support, but fails
         assert_eq!(
@@ -1521,7 +1646,7 @@ mod tests {
         );
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Black);
         let ret = game.process(Action::AddSupport {
-            tile_type: TileType::Empty,
+            tile_type: TileType::Red,
             n: 6,
         });
         assert_eq!(ret.unwrap_err(), Error::NotEnoughTiles);
@@ -1529,7 +1654,7 @@ mod tests {
 
         // player 2 successfully adds 1 support
         let ret = game.process(Action::AddSupport {
-            tile_type: TileType::Empty,
+            tile_type: TileType::Red,
             n: 1,
         });
         assert_eq!(
@@ -1549,16 +1674,16 @@ mod tests {
         // player 1 successfully adds 1 support
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         let ret = game.process(Action::AddSupport {
-            tile_type: TileType::Empty,
+            tile_type: TileType::Red,
             n: 1,
         });
         assert_eq!(game.play_action_stack, vec![p2!()]);
-        assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Any));
+        assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Normal));
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 5);
         assert_eq!(game.players.get_mut(Player::Player1).hand_sum(), 6); // defender draws
 
         let ret = game.process(Action::Pass);
-        assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Any));
+        assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Normal));
         assert_eq!(game.play_action_stack, vec![p1!(), p1!()]);
 
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 6);
@@ -1583,7 +1708,7 @@ mod tests {
 
     #[test]
     fn place_tile() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
         game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(0, 1)),
             leader: Leader::Red,
@@ -1594,7 +1719,7 @@ mod tests {
             to: pos!(0, 0),
             tile_type: TileType::Red,
         });
-        assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Any));
+        assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Normal));
         assert_eq!(game.board.get(pos!(0, 0)).tile_type, TileType::Red);
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 6);
         assert_eq!(game.players.get_mut(Player::Player1).hand_sum(), 6);
@@ -1603,13 +1728,13 @@ mod tests {
 
     #[test]
     fn place_tile_no_leader() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         let ret = game.process(Action::PlaceTile {
             to: pos!(0, 0),
             tile_type: TileType::Red,
         });
-        assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Any));
+        assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Normal));
         assert_eq!(game.board.get(pos!(0, 0)).tile_type, TileType::Red);
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 6);
         assert_eq!(game.players.get_mut(Player::Player1).hand_sum(), 5);
@@ -1618,7 +1743,7 @@ mod tests {
 
     #[test]
     fn place_tile_score_enemy_leader() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
         game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(0, 1)),
             leader: Leader::Red,
@@ -1651,7 +1776,7 @@ mod tests {
 
     #[test]
     fn place_tile_trigger_external_conflict() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
 
         // player 1 place a leader and a tile
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
@@ -1772,12 +1897,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(game.play_action_stack, vec![p1!(), p1!()]);
-        assert_eq!(ret, (Player::Player1, PlayerAction::Any));
+        assert_eq!(ret, (Player::Player1, PlayerAction::Normal));
     }
 
     #[test]
     fn place_tile_does_not_trigger_external_conflict() {
-        let mut game = Game::new();
+        let mut game = TnE::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(1, 0)),
@@ -1803,8 +1928,39 @@ mod tests {
                 tile_type: TileType::Red,
             })
             .unwrap();
-        assert_eq!(ret, (Player::Player1, PlayerAction::Any));
+        assert_eq!(ret, (Player::Player1, PlayerAction::Normal));
         assert_eq!(game.players.get_mut(Player::Player1).score_red, 1);
         assert_eq!(game.players.get_mut(Player::Player2).score_red, 0);
+    }
+
+    #[test]
+    fn place_next_to_red() {
+        let mut game = TnE::new();
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(0, 1)), leader: Leader::Green }).unwrap();
+        let ret = game.board.find_empty_leader_space_next_to_red();
+        assert_eq!(ret.iter().filter(|i|i.x < 5 && i.y < 5).count(), 3);
+        game.process(Action::PlaceTile { to: pos!(1, 0), tile_type: TileType::Green }).unwrap();
+        assert_eq!(game.players.get_mut(Player::Player1).score_green, 1);
+    }
+
+    #[test]
+    fn find_kingdom_adj() {
+        let mut game = TnE::new();
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(1, 2)), leader: Leader::Green }).unwrap();
+        let ret = game.board.find_empty_spaces_adj_kingdom(pos!(1, 1), false);
+
+        assert_eq!(ret, vec![
+            pos!(0,1),
+            pos!(2,1),
+            pos!(1,0),
+            pos!(0,2),
+            pos!(2,2),
+            pos!(1,3),
+        ]);
+    }
+
+    #[test]
+    fn external_conflict_resolution() {
+        // TODO:
     }
 }
