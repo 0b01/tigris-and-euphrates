@@ -15,13 +15,13 @@ use minimax::Move;
 use minimax::Strategy;
 
 use crate::game::Player;
-use crate::{game::TnE, solver::{TigrisAndEuphrates, Evaluator}};
+use crate::{game::TnEGame, solver::{TigrisAndEuphrates, Evaluator}};
 
 pub mod game;
 mod solver;
 
 fn main() {
-    let mut state = TnE::new();
+    let mut state = TnEGame::new();
 
     // some preset scenarios for debugging: 
     state.process(Action::MoveLeader { movement: Movement::Place(pos!("1B")), leader: Leader::Red }).unwrap();
@@ -29,7 +29,8 @@ fn main() {
     state.process(Action::MoveLeader { movement: Movement::Place(pos!("2D")), leader: Leader::Red }).unwrap();
 
     let mut p1_strat = Negamax::new(Evaluator::default(), 4);
-    let mut p2_strat = Random::new();
+    let mut p2_strat = Negamax::new(Evaluator::default(), 2);
+    // let mut p2_strat = Random::new();
     while TigrisAndEuphrates::get_winner(&state).is_none() {
         let curr_player = state.next_player();
         let strategy = match curr_player {
@@ -43,13 +44,13 @@ fn main() {
                 m.apply(&mut state);
             }
             None => {
-                dbg!();
-                continue;
+                panic!("move generator didn't generate any moves");
+                break;
             }
         }
-        println!("{}:{}", state.players.0[0].score_sum(), state.players.0[1].score_sum());
+        // print!("[sum {}:{}], ", state.players.0[0].score_sum(), state.players.0[1].score_sum());
+        println!("[score {}:{}]", state.players.0[0].calculate_score(), state.players.0[1].calculate_score());
     }
-
     dbg!(state);
 
     // perft::<TigrisAndEuphrates>(&mut state, 10, true);

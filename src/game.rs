@@ -2,8 +2,8 @@ use minimax::Game;
 // game for tigris and euphrates
 use packed_struct::prelude::*;
 
-const W: usize = 16;
-const H: usize = 11;
+pub const W: usize = 16;
+pub const H: usize = 11;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Players(pub [PlayerState; 2]);
@@ -22,7 +22,7 @@ impl Players {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct TnE {
+pub struct TnEGame {
     pub board: Board,
     pub players: Players,
     bag: Tiles,
@@ -40,7 +40,7 @@ pub struct TnE {
     external_conflict: Option<ExternalConflict>,
 }
 
-impl std::fmt::Debug for TnE {
+impl std::fmt::Debug for TnEGame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TnE")
             // .field("board", &self.board)
@@ -56,10 +56,10 @@ impl std::fmt::Debug for TnE {
 }
 
 pub struct Kingdom {
-    red_leader: Option<(Player, Pos)>,
-    black_leader: Option<(Player, Pos)>,
-    green_leader: Option<(Player, Pos)>,
-    blue_leader: Option<(Player, Pos)>,
+    pub red_leader: Option<(Player, Pos)>,
+    pub black_leader: Option<(Player, Pos)>,
+    pub green_leader: Option<(Player, Pos)>,
+    pub blue_leader: Option<(Player, Pos)>,
 
     red_tiles: u8,
     black_tiles: u8,
@@ -76,7 +76,7 @@ impl Kingdom {
             || self.blue_leader.is_some()
     }
 
-    fn get_leader_info(&self, leader: Leader) -> Option<(Player, Pos, u8)> {
+    pub fn get_leader_info(&self, leader: Leader) -> Option<(Player, Pos, u8)> {
         match leader {
             Leader::Red => self.red_leader.map(|(p, pos)| (p, pos, self.red_tiles)),
             Leader::Black => self.black_leader.map(|(p, pos)| (p, pos, self.black_tiles)),
@@ -106,15 +106,15 @@ macro_rules! p2 {
     };
 }
 
-impl Default for TnE {
+impl Default for TnEGame {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TnE {
+impl TnEGame {
     pub fn new() -> Self {
-        let mut game = TnE {
+        let mut game = TnEGame {
             board: Board::new(),
             players: Players([PlayerState::new(); 2]),
             state: GameState::Normal,
@@ -1265,7 +1265,7 @@ impl Board {
         ret
     }
 
-    fn find_kingdom(&self, pos: Pos, visited: &mut [[bool; W]; H]) -> Kingdom {
+    pub fn find_kingdom(&self, pos: Pos, visited: &mut [[bool; W]; H]) -> Kingdom {
         let mut kingdom = Kingdom {
             red_leader: None,
             black_leader: None,
@@ -1362,25 +1362,8 @@ impl Board {
     pub fn find_empty_spaces_adj_kingdom(&self, pos: Pos, is_river_space: bool) -> Vec<Pos> {
         let mut ret = Vec::new();
         let mut kingdom = [[false; W]; H];
-        let mut stack = vec![pos];
 
-        // if it's connectable, mark as kingdom
-        while let Some(pos) = stack.pop() {
-            if kingdom[pos.x as usize][pos.y as usize] {
-                continue;
-            }
-
-            let cell = self.get(pos);
-            if !cell.is_connectable() {
-                continue;
-            }
-
-            kingdom[pos.x as usize][pos.y as usize] = true;
-
-            for neighbor_pos in pos.neighbors() {
-                stack.push(neighbor_pos);
-            }
-        }
+        self.find_kingdom_map(pos, &mut kingdom);
 
         // find empty spaces around kingdom
         for x in 0..H {
@@ -1406,6 +1389,27 @@ impl Board {
         }
 
         ret
+    }
+
+    pub fn find_kingdom_map(&self, start: Pos, kingdom: &mut [[bool; 16]; 11]) {
+        let mut stack = vec![start];
+        // if it's connectable, mark as kingdom
+        while let Some(pos) = stack.pop() {
+            if kingdom[pos.x as usize][pos.y as usize] {
+                continue;
+            }
+
+            let cell = self.get(pos);
+            if !cell.is_connectable() {
+                continue;
+            }
+
+            kingdom[pos.x as usize][pos.y as usize] = true;
+
+            for neighbor_pos in pos.neighbors() {
+                stack.push(neighbor_pos);
+            }
+        }
     }
 }
 
@@ -1541,7 +1545,7 @@ mod tests {
 
     #[test]
     fn leader_must_be_placed_next_to_temples() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         assert_eq!(game.play_action_stack, vec![p1!(), p1!()]);
         assert_eq!(game.players.get_mut(Player::Player1).hand_sum(), 6);
         let ret = game.process(Action::MoveLeader {
@@ -1556,7 +1560,7 @@ mod tests {
 
     #[test]
     fn leader_must_be_placed_next_to_temples_ok() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         let ret = game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(0, 1)),
             leader: Leader::Black,
@@ -1641,7 +1645,7 @@ mod tests {
 
     #[test]
     fn internal_conflict() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
 
         // player 1 puts down black and red leaders
         game.process(Action::MoveLeader {
@@ -1766,7 +1770,7 @@ mod tests {
 
     #[test]
     fn place_tile() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(0, 1)),
             leader: Leader::Red,
@@ -1786,7 +1790,7 @@ mod tests {
 
     #[test]
     fn place_tile_no_leader() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         let ret = game.process(Action::PlaceTile {
             to: pos!(0, 0),
@@ -1801,7 +1805,7 @@ mod tests {
 
     #[test]
     fn place_tile_score_enemy_leader() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(0, 1)),
             leader: Leader::Red,
@@ -1834,7 +1838,7 @@ mod tests {
 
     #[test]
     fn place_tile_trigger_external_conflict() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
 
         // player 1 place a leader and a tile
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
@@ -1960,7 +1964,7 @@ mod tests {
 
     #[test]
     fn place_tile_does_not_trigger_external_conflict() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         game.process(Action::MoveLeader {
             movement: Movement::Place(pos!(1, 0)),
@@ -1993,7 +1997,7 @@ mod tests {
 
     #[test]
     fn place_next_to_red() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         game.process(Action::MoveLeader { movement: Movement::Place(pos!(0, 1)), leader: Leader::Green }).unwrap();
         let ret = game.board.find_empty_leader_space_next_to_red();
         assert_eq!(ret.iter().filter(|i|i.x < 5 && i.y < 5).count(), 3);
@@ -2003,7 +2007,7 @@ mod tests {
 
     #[test]
     fn find_kingdom_adj() {
-        let mut game = TnE::new();
+        let mut game = TnEGame::new();
         game.process(Action::MoveLeader { movement: Movement::Place(pos!(1, 2)), leader: Leader::Green }).unwrap();
         let ret = game.board.find_empty_spaces_adj_kingdom(pos!(1, 1), false);
 
