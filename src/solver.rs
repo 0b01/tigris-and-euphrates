@@ -192,7 +192,7 @@ impl minimax::Evaluator for Evaluator {
         let s1 = calculate_score(Player::Player1);
         let s2 = calculate_score(Player::Player2);
 
-        if state.last_player == Player::Player1 {
+        if state.last_action_player == Player::Player2 {
             s2 - s1
         } else {
             s1 - s2

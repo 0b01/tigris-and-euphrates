@@ -273,7 +273,8 @@ async fn run(mut game: TnEGame) {
     loop {
         if game.state.is_empty() {
             // game is over 
-            screenshot("gameover.png");
+            thread::spawn(||screenshot("gameover.png")).join().unwrap();
+            return;
         }
         ui_state.update_hand(&game);
         let mouse_logical = mouse_position_logical();
@@ -438,7 +439,7 @@ async fn run(mut game: TnEGame) {
             if m.is_none() {
                 // take a screenshot
                 screenshot("no_move.png");
-                continue;
+                return;
             }
             let m = m.unwrap();
             println!("{:?}: {:?}", game.next_player(), &m.move_);
@@ -451,7 +452,10 @@ async fn run(mut game: TnEGame) {
 
             let (e1, s1) = calculate_score(Player::Player1);
             let (e2, s2) = calculate_score(Player::Player2);
-            println!("[Score: {} - {}] [Eval: {} - {}]", s1, s2, e1, e2);
+            let player_state = game.players.get_mut(Player::Player1);
+            print!("[Score: {} - {}]", s1, s2);
+            print!("[r({}) - black({}) - blue({}) - g({})]", player_state.score_red, player_state.score_black, player_state.score_blue, player_state.score_green);
+            println!("[Eval: {} - {}]", e1, e2);
         }
     }
 }
@@ -483,8 +487,8 @@ pub fn start(game: TnEGame) {
 
     macroquad::Window::from_config(Conf {
         window_title: "Tigris and Euphrates".to_string(),
-        window_width: 240 * 3,
-        window_height: 160 * 3,
+        window_width: 240 * 5,
+        window_height: 160 * 5,
         high_dpi: false,
         window_resizable: false,
         icon: Some(icon),

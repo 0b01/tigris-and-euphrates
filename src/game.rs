@@ -29,7 +29,12 @@ pub struct TnEGame {
 
     pub play_action_stack: Vec<(Player, PlayerAction)>,
     player_turn: Player,
+
+    /// the last player who executed 2 actions
     pub last_player: Player,
+
+    /// the last player who executed an action
+    pub last_action_player: Player,
 
     /// Revolt
     pub internal_conflict: Option<Conflict>,
@@ -127,6 +132,7 @@ impl TnEGame {
             internal_conflict: None,
             external_conflict: None,
             last_player: Player::None,
+            last_action_player: Player::None,
         };
 
         // initial draw for players, each player draws 6 tiles
@@ -729,6 +735,7 @@ impl TnEGame {
         }
         let (current_player, _) = self.play_action_stack.pop().unwrap();
         let next_state = self.process_action(action, current_player);
+        self.last_action_player = current_player;
         // println!("{:?} => {:?}", self.state, next_state);
         if let Some(next_state) = next_state {
             self.state.push(next_state);
@@ -1220,12 +1227,19 @@ impl PlayerState {
     pub fn get_eval(&self, state: &TnEGame) -> i16 {
         let mut s = 0;
 
-        // 10 points for each final score
-        s += self.calculate_score() as i16 * 10;
+        // 100 points for each final score
+        s += self.calculate_score() as i16 * 20;
 
-        // 5 points for kingdom size
         for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
             if let Some(pos) = self.get_leader(leader) {
+                // 5 points for nearby red tiles
+                for p in pos.neighbors() {
+                    if state.board.get(p).tile_type == TileType::Red {
+                        s += 10;
+                    }
+                }
+
+                // 5 points for each matching tile in kingdom
                 let mut visited = [[false; W]; H];
                 let kingdom = state.board.find_kingdom(pos, &mut visited);
                 s += kingdom.get_leader_info(leader).unwrap().2 as i16 * 5;
