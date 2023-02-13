@@ -1,2 +1,4 @@
 /target
 *.html
+.DS_Store
+*.kra~

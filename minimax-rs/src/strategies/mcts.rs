@@ -259,7 +259,7 @@ impl<G: Game> Strategy<G> for MonteCarloTreeSearch<G>
 where
     G: Send + 'static,
     G::S: Clone + Send + 'static,
-    G::M: Copy + Send + Sync + 'static,
+    G::M: Clone + Send + Sync + 'static,
 {
     fn choose_move(&mut self, s: &G::S) -> Option<G::M> {
         let root = Arc::new(Node::<G::M>::new(None));
@@ -306,7 +306,7 @@ where
         }
 
         let exploration = 0.0; // Just get best node.
-        root.best_child(exploration).map(|node| node.m.unwrap())
+        root.best_child(exploration).map(|node| node.m.clone().unwrap())
     }
 
     fn set_timeout(&mut self, timeout: Duration) {

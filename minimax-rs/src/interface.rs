@@ -145,7 +145,7 @@ pub trait Game: Sized {
     fn get_winner(state: &Self::S) -> Option<Winner>;
 
     /// if it's currently my turn or the opponent's turn
-    fn is_my_turn(state: &Self::S) -> bool;
+    fn is_player1_turn(state: &Self::S) -> bool;
 
     /// Optional method to return a move that does not change the board state.
     /// This does not need to be a legal move from this position, but it is

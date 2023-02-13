@@ -1,3 +1,5 @@
+use std::thread;
+
 use game::Action;
 use game::Leader;
 use game::Movement;
@@ -19,8 +21,14 @@ use crate::{game::TnEGame, solver::{TigrisAndEuphrates, Evaluator}};
 
 pub mod game;
 mod solver;
+mod visualizer;
 
 fn main() {
+    visualizer::start(TnEGame::new());
+    // test_play();
+}
+
+fn test_play() {
     let mut state = TnEGame::new();
 
     // some preset scenarios for debugging: 
@@ -44,7 +52,7 @@ fn main() {
                 m.apply(&mut state);
             }
             None => {
-                panic!("move generator didn't generate any moves");
+                println!("move generator didn't generate any moves");
                 break;
             }
         }
@@ -52,6 +60,10 @@ fn main() {
         println!("[score {}:{}]", state.players.0[0].calculate_score(), state.players.0[1].calculate_score());
     }
     dbg!(state);
+}
 
-    // perft::<TigrisAndEuphrates>(&mut state, 10, true);
+
+fn test_perft() {
+    let mut state = TnEGame::new();
+    perft::<TigrisAndEuphrates>(&mut state, 10, true);
 }

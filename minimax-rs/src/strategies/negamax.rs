@@ -47,10 +47,11 @@ impl<E: Evaluator> Negamax<E> {
         }
         let mut moves = self.move_pool.alloc();
         E::G::generate_moves(s, &mut moves);
+        let am_i_p1 = E::G::is_player1_turn(s);
         let mut best = WORST_EVAL;
         for m in moves.iter() {
             m.apply(s);
-            let is_next_turn_mine = E::G::is_my_turn(s);
+            let is_next_turn_mine = E::G::is_player1_turn(s) == am_i_p1;
             let value = self.negamax(
                 s, depth - 1, 
                 if is_next_turn_mine { alpha } else { -beta },
@@ -86,11 +87,12 @@ where
 
         let mut best_move = moves.first()?.clone();
         let mut s_clone = s.clone();
+        let am_i_p1 = E::G::is_player1_turn(s);
         for m in moves.iter() {
             // determine value for this move
             m.apply(&mut s_clone);
 
-            let is_next_turn_mine = E::G::is_my_turn(s);
+            let is_next_turn_mine = E::G::is_player1_turn(s) == am_i_p1;
             let value = self.negamax(&mut s_clone, self.max_depth - 1, 
                 if is_next_turn_mine { best } else { WORST_EVAL },
                 if is_next_turn_mine { BEST_EVAL } else { -best });

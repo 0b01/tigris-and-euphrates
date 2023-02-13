@@ -50,7 +50,7 @@ impl minimax::Game for TigrisAndEuphrates {
     }
 
     fn get_winner(state: &Self::S) -> Option<minimax::Winner> {
-        if state.state == GameState::GameOver {
+        if state.state.is_empty() {
             match state.winner() {
                 Player::None => Some(minimax::Winner::Draw),
                 t if t == state.last_player => Some(minimax::Winner::PlayerJustMoved),
@@ -61,7 +61,7 @@ impl minimax::Game for TigrisAndEuphrates {
         }
     }
 
-    fn is_my_turn(state: &Self::S) -> bool {
+    fn is_player1_turn(state: &Self::S) -> bool {
         state.next_player() == Player::Player1
     }
 }
@@ -88,6 +88,10 @@ impl PlayerAction {
 
                         let spaces = state.board.find_empty_spaces_adj_kingdom(leader_pos, leader == Leader::Blue);
                         for to in spaces {
+                            if state.board.neighboring_kingdoms(to).len() as u8 > 2 {
+                                continue;
+                            }
+
                             moves.push(TnEMove::new(state.clone(), Action::PlaceTile { to, tile_type: leader.as_tile_type() }));
                         }
                     }
@@ -158,10 +162,10 @@ impl PlayerAction {
             }
             PlayerAction::TakeTreasure(ts) => {
                 moves.push(TnEMove::new(state.clone(),
-                    Action::TakeTreasure{pos: ts[0]},
+                    Action::TakeTreasure(ts[0]),
                 ));
                 moves.push(TnEMove::new(state.clone(),
-                    Action::TakeTreasure{pos: ts[1]},
+                    Action::TakeTreasure(ts[1]),
                 ));
             }
         }
@@ -180,14 +184,13 @@ impl minimax::Evaluator for Evaluator {
     type G = TigrisAndEuphrates;
 
     fn evaluate(&self, state: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
-        let player_1 = state.players.get_mut(Player::Player1);
-        let player_2 = state.players.get_mut(Player::Player2);
+        let calculate_score = |p: Player| -> i16 {
+            let player_state = state.players.get_mut(p);
+            player_state.get_eval(state)
+        };
 
-        // let s1 = player_1.calculate_score() as i16 + player_1.score_sum() as i16;
-        // let s2 = player_2.calculate_score() as i16 + player_2.score_sum() as i16;
-
-        let s1 = player_1.calculate_score() as i16;
-        let s2 = player_2.calculate_score() as i16;
+        let s1 = calculate_score(Player::Player1);
+        let s2 = calculate_score(Player::Player2);
 
         if state.last_player == Player::Player1 {
             s2 - s1
