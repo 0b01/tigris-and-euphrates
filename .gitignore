@@ -1,4 +1,5 @@
 /target
 *.html
 .DS_Store
-*.kra~
+assets/*.kra~
+assets/*.png~

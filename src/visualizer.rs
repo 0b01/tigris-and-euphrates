@@ -60,6 +60,7 @@ pub struct TileDrawer {
     t_black: Texture2D,
     t_green: Texture2D,
     circle: Texture2D,
+    warning: Texture2D,
 }
 
 impl TileDrawer {
@@ -69,7 +70,7 @@ impl TileDrawer {
             ($i:expr) => {
                 {
                     let t = Texture2D::from_image(
-                        &tiles.sub_image(Rect { x: 0. + 12. * $i, y: 0., w: 12., h: 12. })
+                        &tiles.sub_image(Rect { x: 0. + 12. * $i, y: 0., w: 12., h: 13. })
                     );
                     t.set_filter(FilterMode::Nearest);
                     t
@@ -95,6 +96,7 @@ impl TileDrawer {
         let t_black = sub_img!(13.);
         let t_green = sub_img!(14.);
         let circle = sub_img!(15.);
+        let warning = sub_img!(16.);
 
         Self {
             unification,
@@ -113,6 +115,7 @@ impl TileDrawer {
             t_black,
             t_green,
             circle,
+            warning,
         }
     }
 
@@ -169,14 +172,14 @@ impl TileDrawer {
     }
 
     fn draw_texture_at_free(&self, texture: Texture2D, pos: Vec2) {
-        let pos = to_physical(pos);
-        let size = to_physical(Vec2 { x: 12., y: 12. });
-        draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()})
+        let pos = to_physical(pos - Vec2 { x: 0., y: 1. });
+        let size = to_physical(Vec2 { x: 12., y: 13. });
+        draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default()})
     }
 
     fn draw_texture_at(&self, texture: Texture2D, pos: Pos) {
-        let pos = to_physical(grid_to_logical(pos));
-        let size = to_physical(Vec2 { x: 12., y: 12. });
+        let pos = to_physical(grid_to_logical(pos) - Vec2 { x: 0., y: 1. });
+        let size = to_physical(Vec2 { x: 12., y: 13. });
         draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()})
     }
 
@@ -285,12 +288,13 @@ async fn run(mut game: TnEGame) {
             ..Default::default()
         });
 
-        for (i, row) in game.board.0.iter().enumerate() {
-            for (j, cell) in row.iter().enumerate() {
-                tile_drawer.draw(cell, pos!(i as u8, j as u8));
-            }
+        // draw internal conflict
+        if let Some(conflict) = game.internal_conflict.as_ref() {
+            tile_drawer.draw_texture_at(tile_drawer.warning, conflict.attacker_pos);
+            tile_drawer.draw_texture_at(tile_drawer.warning, conflict.defender_pos);
         }
 
+        // draw unification
         if let Some(unification_tile_pos) = game.external_conflict.as_ref().map(|i|i.unification_tile_pos) {
             tile_drawer.draw_texture_at(tile_drawer.unification, unification_tile_pos);
         }
@@ -321,6 +325,11 @@ async fn run(mut game: TnEGame) {
             }
         }
 
+        for (i, row) in game.board.0.iter().enumerate() {
+            for (j, cell) in row.iter().enumerate() {
+                tile_drawer.draw(cell, pos!(i as u8, j as u8));
+            }
+        }
 
         if let PlayerAction::TakeTreasure(ts) = game.next_action() {
             for t in ts {

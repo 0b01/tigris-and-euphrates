@@ -889,13 +889,13 @@ pub struct Conflict {
     leader: Leader,
 
     attacker: Player,
-    attacker_pos: Pos,
+    pub attacker_pos: Pos,
     attacker_support: u8,
     attacker_sent_support: bool,
     attacker_base_strength: u8,
 
     defender: Player,
-    defender_pos: Pos,
+    pub defender_pos: Pos,
     defender_support: u8,
     defender_sent_support: bool,
     defender_base_strength: u8,
