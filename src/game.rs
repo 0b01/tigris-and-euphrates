@@ -410,6 +410,8 @@ impl TnEGame {
                             (defender, attacker, c.attacker_pos)
                         };
 
+                        let tiles_to_remove = self.board.find_disintegrable_tiles(loser_pos, c.leader.as_tile_type());
+
                         // remove loser
                         self.players
                             .get_mut(loser)
@@ -422,7 +424,17 @@ impl TnEGame {
                             .get_mut(winner)
                             .add_score(c.leader.as_tile_type());
 
-                        // TODO: disintegrate kingdom and credit those points to the winner
+                        // disintegrate tiles
+                        let points = tiles_to_remove.len() as u8;
+                        for pos in tiles_to_remove {
+                            let cell = self.board.get(pos);
+                            cell.terrain = Board::lookup_terrain(pos);
+                            cell.tile_type = TileType::Empty;
+                            cell.leader = Leader::None;
+                            cell.player = Player::None;
+                        }
+                        self.players.get_mut(winner).add_score_by(c.leader.as_tile_type(), points);
+
                         let leader = c.leader;
                         drop(c);
                         self.external_conflict.as_mut().unwrap().conflicts.retain(|con| con.leader != leader);
@@ -727,6 +739,7 @@ impl TnEGame {
         }
     }
 
+    // TODO: add monuments
     pub fn process(&mut self, action: Action) -> Result<(Player, PlayerAction)> {
         let current_state = self.state.pop().ok_or(Error::GameOver)?;
         if let Err(e) = self.validate_action(action, current_state) {
@@ -1535,6 +1548,39 @@ impl Board {
             _ => Terrain::Empty,
         }
     }
+
+    fn find_disintegrable_tiles(&self, loser_pos: Pos, tile_type: TileType) -> Vec<Pos> {
+        // find all the tiles that are connected to the loser of TileType
+        let mut ret = vec![];
+        let mut visited = [[false; W]; H];
+        let mut stack = vec![loser_pos];
+        while let Some(pos) = stack.pop() {
+            if visited[pos.x as usize][pos.y as usize] {
+                continue;
+            }
+            visited[pos.x as usize][pos.y as usize] = true;
+
+            let cell = self.get(pos);
+
+            // skip any red tiles that are next to a leader
+            let nearby_leader = pos.neighbors().iter().any(|pos| {
+                let cell = self.get(*pos);
+                cell.leader != Leader::None
+            });
+            let leader_near_red = cell.tile_type == TileType::Red && nearby_leader;
+            if cell.tile_type == tile_type && !leader_near_red {
+                ret.push(pos);
+            }
+
+            if cell.is_connectable() && cell.terrain != Terrain::UnificationTile {
+                for neighbor_pos in pos.neighbors() {
+                    stack.push(neighbor_pos);
+                }
+            }
+        }
+
+        ret
+    }
 }
 
 #[derive(PackedStruct, Copy, Clone, Debug, Eq, PartialEq)]
@@ -1656,6 +1702,8 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::visualizer;
+
     use super::*;
 
     #[test]
@@ -2126,6 +2174,7 @@ mod tests {
         game.process(Action::MoveLeader { movement: Movement::Place(pos!(0, 1)), leader: Leader::Green }).unwrap();
         let ret = game.board.find_empty_leader_space_next_to_red();
         assert_eq!(ret.iter().filter(|i|i.x < 5 && i.y < 5).count(), 3);
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Green);
         game.process(Action::PlaceTile { to: pos!(1, 0), tile_type: TileType::Green }).unwrap();
         assert_eq!(game.players.get_mut(Player::Player1).score_green, 1);
     }
@@ -2148,6 +2197,23 @@ mod tests {
 
     #[test]
     fn external_conflict_resolution() {
-        // TODO:
+        let mut game = TnEGame::new();
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(1, 0)), leader: Leader::Black }).unwrap();
+        game.process(Action::PlaceTile { to: pos!(1, 3), tile_type: TileType::Red }).unwrap();
+
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Black);
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(0, 3)), leader: Leader::Black }).unwrap();
+        game.process(Action::PlaceTile { to: pos!(0, 2), tile_type: TileType::Black }).unwrap();
+
+        game.players.get_mut(Player::Player1).hand_black = 2;
+        game.process(Action::PlaceTile { to: pos!(1, 2), tile_type: TileType::Black }).unwrap();
+        game.process(Action::WarSelectLeader { leader: Leader::Black }).unwrap();
+        game.players.get_mut(Player::Player1).hand_black = 2;
+        game.process(Action::AddSupport { tile_type: TileType::Black, n: 2 }).unwrap();
+
+        game.process(Action::AddSupport { tile_type: TileType::Black, n: 0 }).unwrap();
+        assert_eq!(game.board.get(pos!(0, 2)).tile_type, TileType::Empty);
+        assert_eq!(game.next_state(), GameState::Normal);
     }
 }

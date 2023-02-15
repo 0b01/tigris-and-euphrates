@@ -1,25 +1,31 @@
-use std::{thread, time::Duration};
+use std::pin::Pin;
 
 use macroquad::{prelude::*, miniquad::conf::Icon};
-use minimax::{Negamax, Strategy, Move, MonteCarloTreeSearch, MCTSOptions, Random};
+use minimax::{Negamax, Strategy, Move};
 
-use crate::{game::{TnEGame, Cell, Terrain, TileType, Leader, Player, W, H, Action, Pos, Movement, PlayerAction}, pos, solver::{Evaluator, TigrisAndEuphrates}};
+use crate::{pos, solver::Evaluator};
+use crate::game::{TnEGame, Cell, Terrain, TileType, Leader, Player, W, H, Action, Pos, Movement, PlayerAction};
+
+// the top left corner of the grid
 const LOGICAL_GRID_START_Y: f32 = 8.;
 const LOGICAL_GRID_START_X: f32 = 17.;
+
+// logical size of the screen, it's the size of gameboy
 const LOGICAL_W: f32 = 240.;
 const LOGICAL_H: f32 = 160.;
 
+// draw the hand at the right side of the screen
 const HAND_X: f32 = 226.;
 const HAND_Y: f32 = 10.;
 
-fn to_logical(v2: Vec2) -> Vec2 {
+fn physical_to_logical(v2: Vec2) -> Vec2 {
     Vec2 {
         y: v2.y * LOGICAL_H / screen_height(),
         x: v2.x * LOGICAL_W / screen_width(),
     }
 }
 
-fn to_physical(v2: Vec2) -> Vec2 {
+fn logical_to_physical(v2: Vec2) -> Vec2 {
     Vec2 {
         x: v2.x * screen_height() / LOGICAL_H,
         y: v2.y * screen_width() / LOGICAL_W,
@@ -28,8 +34,8 @@ fn to_physical(v2: Vec2) -> Vec2 {
 
 fn grid_to_logical(pos: Pos) -> Vec2 {
     Vec2 {
-        x: LOGICAL_GRID_START_X + pos.y as f32 * 12. + pos.y as f32,
-        y: LOGICAL_GRID_START_Y + pos.x as f32 * 12. + pos.x as f32,
+        x: LOGICAL_GRID_START_X + pos.y as f32 * 13.,
+        y: LOGICAL_GRID_START_Y + pos.x as f32 * 13.,
     }
 }
 
@@ -39,11 +45,13 @@ fn logical_to_grid(pos: Vec2) -> Pos {
     Pos { x: x as u8, y: y as u8 }
 }
 
+// if mouse is in the one of the grid cells
 fn in_tile(pos: Vec2, tile: Vec2) -> bool {
     pos.x >= tile.x && pos.x <= tile.x + 12. && pos.y >= tile.y && pos.y <= tile.y + 12.
 }
 
-pub struct TileDrawer {
+// holds all the textures
+pub struct Textures {
     unification: Texture2D,
     treasure_blue: Texture2D,
     bull_blue: Texture2D,
@@ -63,7 +71,7 @@ pub struct TileDrawer {
     warning: Texture2D,
 }
 
-impl TileDrawer {
+impl Textures {
     async fn new() -> Self {
         let tiles = load_texture("assets/tiles.png").await.unwrap().get_texture_data();
         macro_rules! sub_img {
@@ -119,7 +127,7 @@ impl TileDrawer {
         }
     }
 
-    fn draw_leader_free(&self, leader: Leader, pos: Vec2) {
+    fn draw_leader_logical(&self, leader: Leader, pos: Vec2) {
         let texture = match leader {
             Leader::Red => Some(self.bull_red),
             Leader::Blue => Some(self.bull_blue),
@@ -128,24 +136,11 @@ impl TileDrawer {
             _ => None,
         };
         if let Some(t) = texture {
-            self.draw_texture_at_free(t, pos);
+            self.draw_texture_at_logical(t, pos);
         }
     }
 
-    fn draw_leader(&self, leader: Leader, pos: Pos) {
-        let texture = match leader {
-            Leader::Red => Some(self.bull_red),
-            Leader::Blue => Some(self.bull_blue),
-            Leader::Black => Some(self.bull_black),
-            Leader::Green => Some(self.bull_green),
-            _ => None,
-        };
-        if let Some(t) = texture {
-            self.draw_texture_at(t, pos);
-        }
-    }
-
-    fn draw_tile_free(&self, tile_type: TileType, pos: Vec2) {
+    fn draw_tile_logical(&self, tile_type: TileType, pos: Vec2) {
         let texture = match tile_type {
             TileType::Red => Some(self.t_red),
             TileType::Blue => Some(self.t_blue),
@@ -154,32 +149,19 @@ impl TileDrawer {
             _ => None,
         };
         if let Some(t) = texture {
-            self.draw_texture_at_free(t, pos)
+            self.draw_texture_at_logical(t, pos)
         }
     }
 
-    fn draw_tile(&self, tile_type: TileType, pos: Pos) {
-        let texture = match tile_type {
-            TileType::Red => Some(self.t_red),
-            TileType::Blue => Some(self.t_blue),
-            TileType::Black => Some(self.t_black),
-            TileType::Green => Some(self.t_green),
-            _ => None,
-        };
-        if let Some(t) = texture {
-            self.draw_texture_at(t, pos)
-        }
-    }
-
-    fn draw_texture_at_free(&self, texture: Texture2D, pos: Vec2) {
-        let pos = to_physical(pos - Vec2 { x: 0., y: 1. });
-        let size = to_physical(Vec2 { x: 12., y: 13. });
+    fn draw_texture_at_logical(&self, texture: Texture2D, pos: Vec2) {
+        let pos = logical_to_physical(pos - Vec2 { x: 0., y: 1. });
+        let size = logical_to_physical(Vec2 { x: 12., y: 13. });
         draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default()})
     }
 
-    fn draw_texture_at(&self, texture: Texture2D, pos: Pos) {
-        let pos = to_physical(grid_to_logical(pos) - Vec2 { x: 0., y: 1. });
-        let size = to_physical(Vec2 { x: 12., y: 13. });
+    fn draw_texture_at_grid(&self, texture: Texture2D, pos: Pos) {
+        let pos = logical_to_physical(grid_to_logical(pos) - Vec2 { x: 0., y: 1. });
+        let size = logical_to_physical(Vec2 { x: 12., y: 13. });
         draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()})
     }
 
@@ -208,7 +190,7 @@ impl TileDrawer {
             }
         };
         if let Some(t) = texture {
-            self.draw_texture_at(t, pos);
+            self.draw_texture_at_grid(t, pos);
         }
     }
 }
@@ -216,13 +198,13 @@ impl TileDrawer {
 struct Tile {
     logical_pos: Vec2,
     holding_type: Result<TileType, Leader>,
-    selected: bool,
 }
 
 struct GameUIState {
     tiles: Vec<Tile>,
     selected: Option<usize>,
 }
+
 impl GameUIState {
     fn new(game: &TnEGame) -> Self {
         let mut s = Self {
@@ -233,15 +215,11 @@ impl GameUIState {
         s
     }
 
-    fn draw(&self, tile_drawer: &TileDrawer) {
+    fn draw(&self, textures: &Textures) {
         for tile in &self.tiles {
-            if tile.selected {
-                continue;
-            }
-
             match tile.holding_type {
-                Ok(t) => tile_drawer.draw_tile_free(t, tile.logical_pos),
-                Err(l) => tile_drawer.draw_leader_free(l, tile.logical_pos),
+                Ok(t) => textures.draw_tile_logical(t, tile.logical_pos),
+                Err(l) => textures.draw_leader_logical(l, tile.logical_pos),
             }
         }
     }
@@ -260,46 +238,41 @@ impl GameUIState {
         self.tiles = hand.iter().enumerate().map(|(i, t)| Tile {
             logical_pos: vec2(HAND_X, HAND_Y + i as f32 * 12. + 2. * i as f32),
             holding_type: *t,
-            selected: false,
         }).collect();
     }
 }
 
-async fn run(mut game: TnEGame) {
+async fn run(mut game: TnEGame, draw_only: Option<&str>) {
     let map = load_texture("assets/map.png").await.unwrap();
     map.set_filter(FilterMode::Nearest);
-    let tile_drawer = TileDrawer::new().await;
+    let textures = Textures::new().await;
     let mut ui_state = GameUIState::new(&game);
-    let mut strategy = Negamax::new(Evaluator::default(), 3);
+    let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
     // let mut strategy = Random::<TigrisAndEuphrates>::default();
 
     loop {
-        if game.state.is_empty() {
-            // game is over 
-            thread::spawn(||screenshot("gameover.png")).join().unwrap();
-            return;
-        }
         ui_state.update_hand(&game);
         let mouse_logical = mouse_position_logical();
         clear_background(LIGHTGRAY);
 
+        // draw the map
         draw_texture_ex(map, 0., 0., WHITE, DrawTextureParams {
             dest_size: Some(vec2(screen_width(), screen_height())),
             ..Default::default()
         });
 
-        // draw internal conflict
+        // draw internal conflict, behind tiles
         if let Some(conflict) = game.internal_conflict.as_ref() {
-            tile_drawer.draw_texture_at(tile_drawer.warning, conflict.attacker_pos);
-            tile_drawer.draw_texture_at(tile_drawer.warning, conflict.defender_pos);
+            textures.draw_texture_at_grid(textures.warning, conflict.attacker_pos);
+            textures.draw_texture_at_grid(textures.warning, conflict.defender_pos);
         }
 
-        // draw unification
+        // draw unification tile
         if let Some(unification_tile_pos) = game.external_conflict.as_ref().map(|i|i.unification_tile_pos) {
-            tile_drawer.draw_texture_at(tile_drawer.unification, unification_tile_pos);
+            textures.draw_texture_at_grid(textures.unification, unification_tile_pos);
         }
 
-        // draw external conflict
+        // draw external conflict, a black circle surrounding leaders
         if let PlayerAction::SelectLeader { red, blue, green, black } = game.next_action() {
             for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
                 let in_conflict = match leader {
@@ -314,7 +287,7 @@ async fn run(mut game: TnEGame) {
                 }
 
                 if let Some(pos) = game.players.get_mut(Player::Player1).get_leader(leader) {
-                    tile_drawer.draw_texture_at(tile_drawer.circle, pos);
+                    textures.draw_texture_at_grid(textures.circle, pos);
                     if is_mouse_button_pressed(MouseButton::Left) && in_tile(mouse_logical, grid_to_logical(pos)) {
                         let out = game.process(Action::WarSelectLeader { leader });
                         if out.is_err() {
@@ -325,15 +298,17 @@ async fn run(mut game: TnEGame) {
             }
         }
 
+        // draw the tiles
         for (i, row) in game.board.0.iter().enumerate() {
             for (j, cell) in row.iter().enumerate() {
-                tile_drawer.draw(cell, pos!(i as u8, j as u8));
+                textures.draw(cell, pos!(i as u8, j as u8));
             }
         }
 
+        // if we can take treasure, draw treasure tiles
         if let PlayerAction::TakeTreasure(ts) = game.next_action() {
             for t in ts {
-                tile_drawer.draw_texture_at(tile_drawer.treasure_blue, t);
+                textures.draw_texture_at_grid(textures.treasure_blue, t);
 
                 // if clicked on those tiles, take the treasure
                 if logical_to_grid(mouse_logical) == t && is_mouse_button_pressed(MouseButton::Left) {
@@ -345,6 +320,7 @@ async fn run(mut game: TnEGame) {
             }
         }
 
+        // if we can add support, check if we pressed a number key
         let n = if is_key_pressed(KeyCode::Key0) {
             Some(0)
         } else if is_key_pressed(KeyCode::Key1) {
@@ -371,7 +347,8 @@ async fn run(mut game: TnEGame) {
             }
         }
 
-        ui_state.draw(&tile_drawer);
+        // draw tile if we are dragging
+        ui_state.draw(&textures);
 
         // if clicked on hand or grid
         if is_mouse_button_pressed(MouseButton::Left) {
@@ -389,19 +366,14 @@ async fn run(mut game: TnEGame) {
                     if let Ok(()) = game.validate_action(action, game.next_state()) {
                         game.process(action).unwrap();
                     }
-
-                    ui_state.update_hand(&game);
-                    ui_state.selected = None;
-                } else {
-                    ui_state.selected = None;
-                    ui_state.tiles[i].selected = false;
                 }
+
+                ui_state.selected = None;
             }
 
-            for (i, Tile {logical_pos: pos, selected, ..}) in ui_state.tiles.iter_mut().enumerate() {
+            for (i, Tile {logical_pos: pos, ..}) in ui_state.tiles.iter_mut().enumerate() {
                 if in_tile(mouse_logical, *pos) {
                     ui_state.selected = Some(i); 
-                    *selected = true;
                     break;
                 }
             }
@@ -410,10 +382,11 @@ async fn run(mut game: TnEGame) {
         // if we are holding a tile
         if let Some(i) = ui_state.selected {
             let holding_type = ui_state.tiles[i].holding_type;
-            // snap to grid
+
+            // if clicked in the grid
             let pos = if in_grid(mouse_logical) {
+                // snap to grid
                 let x = (mouse_logical.x - LOGICAL_GRID_START_X) / 13.;
-                // round down
                 let grid_x = x.floor();
                 let x = grid_x * 13. + LOGICAL_GRID_START_X;
                 let y = (mouse_logical.y - LOGICAL_GRID_START_Y) / 13.;
@@ -434,22 +407,34 @@ async fn run(mut game: TnEGame) {
 
             if let Some(pos) = pos {
                 match holding_type {
-                    Ok(t) => tile_drawer.draw_tile_free(t, pos),
-                    Err(l) => tile_drawer.draw_leader_free(l, pos),
+                    Ok(t) => textures.draw_tile_logical(t, pos),
+                    Err(l) => textures.draw_leader_logical(l, pos),
                 }
             }
         }
 
+        // finish drawing
         next_frame().await;
 
+        if let Some(path) = draw_only {
+            screenshot(path);
+            break;
+        }
+
+        if is_key_pressed(KeyCode::S) {
+            screenshot("screenshot.png");
+        }
+
+        // if the next player is the AI, let it play, could take a while
         if game.next_player() == Player::Player2 {
             println!("Player 2's turn. Thinking...");
-            let m = strategy.choose_move(&mut game);
+            let m = ai_strategy.choose_move(&mut game);
             if m.is_none() {
                 // take a screenshot
                 screenshot("no_move.png");
                 return;
             }
+
             let m = m.unwrap();
             println!("{:?}: {:?}", game.next_player(), &m.move_);
             m.apply(&mut game);
@@ -466,6 +451,12 @@ async fn run(mut game: TnEGame) {
             print!("[r({}) - black({}) - blue({}) - g({})]", player_state.score_red, player_state.score_black, player_state.score_blue, player_state.score_green);
             println!("[Eval: {} - {}]", e1, e2);
         }
+
+        if game.state.is_empty() {
+            // game is over 
+            screenshot("gameover.png");
+            return;
+        }
     }
 }
 
@@ -475,7 +466,7 @@ fn screenshot(filename: &str) {
 
 fn mouse_position_logical() -> Vec2 {
     let (x, y) = mouse_position();
-    let mouse_logical = to_logical(vec2(x, y));
+    let mouse_logical = physical_to_logical(vec2(x, y));
     mouse_logical
 }
 
@@ -502,5 +493,5 @@ pub fn start(game: TnEGame) {
         window_resizable: false,
         icon: Some(icon),
         ..Default::default()
-    }, run(game));
+    }, run(game, None));
 }
