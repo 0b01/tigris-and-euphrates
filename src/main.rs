@@ -5,15 +5,12 @@ use game::Action;
 use game::Leader;
 use game::Movement;
 use game::TileType;
+use minimax::MCTSOptions;
+use minimax::MonteCarloTreeSearch;
 use minimax::perft;
 use minimax::Game;
-use minimax::IterativeOptions;
-use minimax::IterativeSearch;
 use minimax::Move;
 use minimax::Negamax;
-use minimax::ParallelOptions;
-use minimax::ParallelSearch;
-use minimax::Random;
 use minimax::Strategy;
 
 use crate::game::Player;
@@ -27,14 +24,14 @@ mod solver;
 mod visualizer;
 
 fn main() {
-    visualizer::start(TnEGame::new());
-    // test_play();
+    // visualizer::start(TnEGame::new());
+    test_play();
 }
 
 fn test_play() {
     let mut state = TnEGame::new();
 
-    // some preset scenarios for debugging:
+    // // some preset scenarios for debugging:
     state
         .process(Action::MoveLeader {
             movement: Movement::Place(pos!("1B")),
@@ -54,8 +51,18 @@ fn test_play() {
         })
         .unwrap();
 
-    let mut p1_strat = Negamax::new(Evaluator::default(), 4);
+    let mut p1_strat = Negamax::new(Evaluator::default(), 2);
     let mut p2_strat = Negamax::new(Evaluator::default(), 2);
+
+    // let mut p1_strat = MonteCarloTreeSearch::new(
+    //     MCTSOptions::default()
+    //         .with_num_threads(1)
+    // );
+    // let mut p2_strat = MonteCarloTreeSearch::new(
+    //     MCTSOptions::default()
+    //         .with_num_threads(1)
+    // );
+
     // let mut p2_strat = Random::new();
     while TigrisAndEuphrates::get_winner(&state).is_none() {
         let curr_player = state.next_player();

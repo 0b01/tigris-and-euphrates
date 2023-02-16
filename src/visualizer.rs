@@ -258,7 +258,7 @@ impl Textures {
             return;
         } else if cell.terrain == Terrain::Monument {
             None
-        } else if cell.terrain == Terrain::Treasure {
+        } else if cell.has_treasure {
             Some(self.t_red_treasure)
         } else if cell.tile_type == TileType::Red {
             Some(self.t_red)
@@ -567,13 +567,13 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             let m = m.unwrap();
             process(&mut game, m.move_);
 
-            let calculate_score = |p| {
-                let player_state = game.players.get_mut(p);
-                (player_state.get_eval(&game), player_state.calculate_score())
-            };
+            fn calculate_score(game: &mut TnEGame, p: Player) -> (i16, u8) {
+                let player_state = game.players.get(p);
+                (player_state.get_eval(game), player_state.calculate_score())
+            }
 
-            let (e1, s1) = calculate_score(Player::Player1);
-            let (e2, s2) = calculate_score(Player::Player2);
+            let (e1, s1) = calculate_score(&mut game, Player::Player1);
+            let (e2, s2) = calculate_score(&mut game, Player::Player2);
             let player_state = game.players.get_mut(Player::Player1);
             print!("\t[Score: {} - {}]", s1, s2);
             print!(

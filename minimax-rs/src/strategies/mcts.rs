@@ -246,9 +246,11 @@ impl<G: Game> MonteCarloTreeSearch<G> {
         // Recurse.
         let next = node.best_child(1.).unwrap();
         let m = next.m.as_ref().unwrap();
+
+        let old_state = state.clone();
         m.apply(state);
         let result = -self.simulate(next, state, force_rollout)?;
-        m.undo(state);
+        *state = old_state;
 
         // Backpropagate.
         node.update_stats(result)

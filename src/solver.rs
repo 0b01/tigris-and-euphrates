@@ -10,8 +10,6 @@ pub struct TnEMove {
     pub move_: Action,
 }
 
-unsafe impl Sync for TnEMove {}
-
 impl Zobrist for TnEGame {
     fn zobrist_hash(&self) -> u64 {
         0
@@ -31,8 +29,14 @@ impl minimax::Move for TnEMove {
     type G = TigrisAndEuphrates;
 
     fn apply(&self, state: &mut <Self::G as minimax::Game>::S) {
-        // dbg!(self.move_);
-        state.process(self.move_).unwrap();
+        match state.process(self.move_) {
+            Ok(_) => {}
+            Err(e) => {
+                dbg!(state);
+                dbg!(self.move_);
+                panic!("{:#?}", e);
+            }
+        }
     }
 
     fn undo(&self, state: &mut <Self::G as minimax::Game>::S) {
@@ -72,7 +76,7 @@ impl PlayerAction {
 
         match self {
             PlayerAction::AddSupport(tile_type) => {
-                let max = state.players.get_mut(current_player).get_hand(*tile_type);
+                let max = state.players.get(current_player).get_hand(*tile_type);
                 for n in 0..=max {
                     moves.push(TnEMove::new(
                         state.clone(),
@@ -85,11 +89,12 @@ impl PlayerAction {
             }
             PlayerAction::Normal => {
                 // place tile
-                let player = state.players.get_mut(current_player);
+                let player = state.players.get(current_player);
                 for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
                 {
                     if let Some(leader_pos) = player.get_leader(leader) {
                         if player.get_hand(leader.as_tile_type()) == 0 {
+                            // dbg!(leader.as_tile_type(), leader_pos, player.get_hand(leader.as_tile_type()));
                             continue;
                         }
 
@@ -116,13 +121,14 @@ impl PlayerAction {
 
                 // TODO: Action::ReplaceTile(_))
 
+                // move leader
                 for pos in state.board.find_empty_leader_space_next_to_red() {
                     let mut visited = [[false; W]; H];
                     let kingdom = state.board.find_kingdom(pos, &mut visited);
                     for leader in
                         [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
                     {
-                        if let Some(from) = state.players.get_mut(current_player).get_leader(leader)
+                        if let Some(from) = state.players.get(current_player).get_leader(leader)
                         {
                             // only move when the position is in enemy's kingdom
                             if let Some(possible_enemy) =
@@ -152,18 +158,18 @@ impl PlayerAction {
                     }
                 }
 
-                // if state.players.get_mut(current_player).num_catastrophes > 0 {
-                //     for pos in state.board.find_catastrophe_positions() {
-                //         moves.push(TnEMove::new(state.clone(),
-                //             Action::PlaceCatastrophe { to: pos },
-                //         ));
-                //     }
-                // }
+                if state.players.get(current_player).num_catastrophes > 0 {
+                    for pos in state.board.find_catastrophe_positions() {
+                        moves.push(TnEMove::new(state.clone(),
+                            Action::PlaceCatastrophe { to: pos },
+                        ));
+                    }
+                }
 
-                // moves.push(TnEMove {
-                //     old_state: state.clone(),
-                //     move_: Action::Pass,
-                // });
+                moves.push(TnEMove {
+                    old_state: state.clone(),
+                    move_: Action::Pass,
+                });
             }
             PlayerAction::SelectLeader {
                 red,
@@ -235,13 +241,10 @@ impl minimax::Evaluator for Evaluator {
     type G = TigrisAndEuphrates;
 
     fn evaluate(&self, state: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
-        let calculate_score = |p: Player| -> i16 {
-            let player_state = state.players.get_mut(p);
-            player_state.get_eval(state)
-        };
+        
 
-        let s1 = calculate_score(Player::Player1);
-        let s2 = calculate_score(Player::Player2);
+        let s1 = state.players.get(Player::Player1).get_eval(state);
+        let s2 = state.players.get(Player::Player2).get_eval(state);
 
         if state.last_action_player == Player::Player2 {
             s2 - s1
