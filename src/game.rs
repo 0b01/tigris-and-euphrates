@@ -36,7 +36,7 @@ impl Players {
 #[derive(Clone, Eq, PartialEq)]
 pub struct Monument {
     pub monument_type: MonumentType,
-    pub monument_top_left: Pos,
+    pub pos_top_left: Pos,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -380,12 +380,14 @@ impl TnEGame {
                 for pos in positions.iter() {
                     let cell = self.board.get(*pos);
                     cell.terrain = Terrain::Monument;
+                    cell.leader = Leader::None;
+                    cell.tile_type = TileType::Empty;
                 }
                 self.board.get(pos_top_left).terrain = Terrain::MonumentTopLeft;
 
                 self.monuments.push(Monument {
                     monument_type,
-                    monument_top_left: pos_top_left,
+                    pos_top_left,
                 });
 
                 Some(GameState::Normal)
@@ -803,7 +805,7 @@ impl TnEGame {
             let current_player = self.player_turn;
 
             // add points from monuments
-            for Monument { monument_type, monument_top_left } in &self.monuments {
+            for Monument { monument_type, pos_top_left: monument_top_left } in &self.monuments {
                 let mut visited = [[false; W]; H];
                 let kingdom = self.board.find_kingdom(*monument_top_left, &mut visited);
                 for leader in monument_type.unpack() {
@@ -1784,6 +1786,8 @@ impl Cell {
         self.tile_type != TileType::Empty
             || self.leader != Leader::None
             || self.terrain == Terrain::UnificationTile
+            || self.terrain == Terrain::Monument
+            || self.terrain == Terrain::MonumentTopLeft
     }
 }
 
@@ -2452,7 +2456,12 @@ mod tests {
             MonumentType::RedBlue,
             MonumentType::BlackRed])));
         game.process(Action::BuildMonument { pos_top_left: pos!(0, 0), monument_type: MonumentType::RedGreen }).unwrap();
-        game.process(Action::MoveLeader { movement: Movement::Place(pos!(2, 0)), leader: Leader::Green }).unwrap();
-        assert_eq!(game.players.0[1].score_green, 1);
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { to: pos!(1, 2), tile_type: TileType::Red }).unwrap();
+
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(2, 2)), leader: Leader::Green }).unwrap();
+        game.process(Action::Pass).unwrap();
+        assert_eq!(game.players.0[0].score_green, 1);
     }
 }

@@ -196,7 +196,7 @@ impl Textures {
 
     fn draw(&self, game: &TnEGame, cell: &Cell, pos: Pos) {
         let texture = if cell.terrain == Terrain::MonumentTopLeft {
-            let m = game.monuments.iter().filter(|m|m.monument_top_left == pos).next().unwrap();
+            let m = game.monuments.iter().filter(|m|m.pos_top_left == pos).next().unwrap();
             let texture = match m.monument_type {
                 MonumentType::RedBlue => self.monument_red_blue,
                 MonumentType::BlackGreen => self.monument_black_green,
