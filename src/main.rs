@@ -1,23 +1,26 @@
 use std::thread;
 
+use game::pos;
 use game::Action;
 use game::Leader;
 use game::Movement;
 use game::TileType;
-use game::pos;
+use minimax::perft;
+use minimax::Game;
 use minimax::IterativeOptions;
 use minimax::IterativeSearch;
+use minimax::Move;
 use minimax::Negamax;
 use minimax::ParallelOptions;
 use minimax::ParallelSearch;
 use minimax::Random;
-use minimax::perft;
-use minimax::Game;
-use minimax::Move;
 use minimax::Strategy;
 
 use crate::game::Player;
-use crate::{game::TnEGame, solver::{TigrisAndEuphrates, Evaluator}};
+use crate::{
+    game::TnEGame,
+    solver::{Evaluator, TigrisAndEuphrates},
+};
 
 pub mod game;
 mod solver;
@@ -31,10 +34,25 @@ fn main() {
 fn test_play() {
     let mut state = TnEGame::new();
 
-    // some preset scenarios for debugging: 
-    state.process(Action::MoveLeader { movement: Movement::Place(pos!("1B")), leader: Leader::Red }).unwrap();
-    state.process(Action::PlaceTile { to: pos!("1D"), tile_type: TileType::Red }).unwrap();
-    state.process(Action::MoveLeader { movement: Movement::Place(pos!("2D")), leader: Leader::Red }).unwrap();
+    // some preset scenarios for debugging:
+    state
+        .process(Action::MoveLeader {
+            movement: Movement::Place(pos!("1B")),
+            leader: Leader::Red,
+        })
+        .unwrap();
+    state
+        .process(Action::PlaceTile {
+            to: pos!("1D"),
+            tile_type: TileType::Red,
+        })
+        .unwrap();
+    state
+        .process(Action::MoveLeader {
+            movement: Movement::Place(pos!("2D")),
+            leader: Leader::Red,
+        })
+        .unwrap();
 
     let mut p1_strat = Negamax::new(Evaluator::default(), 4);
     let mut p2_strat = Negamax::new(Evaluator::default(), 2);
@@ -57,11 +75,14 @@ fn test_play() {
             }
         }
         // print!("[sum {}:{}], ", state.players.0[0].score_sum(), state.players.0[1].score_sum());
-        println!("[score {}:{}]", state.players.0[0].calculate_score(), state.players.0[1].calculate_score());
+        println!(
+            "[score {}:{}]",
+            state.players.0[0].calculate_score(),
+            state.players.0[1].calculate_score()
+        );
     }
     dbg!(state);
 }
-
 
 fn test_perft() {
     let mut state = TnEGame::new();

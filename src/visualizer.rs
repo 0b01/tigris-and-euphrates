@@ -1,8 +1,11 @@
-use macroquad::{prelude::*, miniquad::conf::Icon};
+use macroquad::{miniquad::conf::Icon, prelude::*};
 use minimax::{Negamax, Strategy};
 
+use crate::game::{
+    Action, Cell, Leader, Monument, MonumentType, Movement, Player, PlayerAction, Pos, Terrain,
+    TileType, TnEGame, H, W,
+};
 use crate::{pos, solver::Evaluator};
-use crate::game::{TnEGame, Cell, Terrain, TileType, Leader, Player, W, H, Action, Pos, Movement, PlayerAction, Monument, MonumentType};
 
 // the top left corner of the grid
 const LOGICAL_GRID_START_Y: f32 = 8.;
@@ -40,7 +43,10 @@ fn grid_to_logical(pos: Pos) -> Vec2 {
 fn logical_to_grid(pos: Vec2) -> Pos {
     let y = (pos.x - LOGICAL_GRID_START_X) / 13.;
     let x = (pos.y - LOGICAL_GRID_START_Y) / 13.;
-    Pos { x: x as u8, y: y as u8 }
+    Pos {
+        x: x as u8,
+        y: y as u8,
+    }
 }
 
 // if mouse is in the one of the grid cells
@@ -78,26 +84,31 @@ pub struct Textures {
 
 impl Textures {
     async fn new() -> Self {
-        let tiles = load_texture("assets/tiles.png").await.unwrap().get_texture_data();
+        let tiles = load_texture("assets/tiles.png")
+            .await
+            .unwrap()
+            .get_texture_data();
         macro_rules! sub_img {
-            ($i:expr) => {
-                {
-                    let t = Texture2D::from_image(
-                        &tiles.sub_image(Rect { x: 12. * $i, y: 0., w: 12., h: 13. })
-                    );
-                    t.set_filter(FilterMode::Nearest);
-                    t
-                }
-            };
-            ($f:expr, $i:expr, $h:expr, $w:expr) => {
-                {
-                    let t = Texture2D::from_image(
-                        &$f.sub_image(Rect { x: $w * $i, y: 0., w: $w, h: $h })
-                    );
-                    t.set_filter(FilterMode::Nearest);
-                    t
-                }
-            }
+            ($i:expr) => {{
+                let t = Texture2D::from_image(&tiles.sub_image(Rect {
+                    x: 12. * $i,
+                    y: 0.,
+                    w: 12.,
+                    h: 13.,
+                }));
+                t.set_filter(FilterMode::Nearest);
+                t
+            }};
+            ($f:expr, $i:expr, $h:expr, $w:expr) => {{
+                let t = Texture2D::from_image(&$f.sub_image(Rect {
+                    x: $w * $i,
+                    y: 0.,
+                    w: $w,
+                    h: $h,
+                }));
+                t.set_filter(FilterMode::Nearest);
+                t
+            }};
         }
 
         let unification = sub_img!(0.);
@@ -120,7 +131,10 @@ impl Textures {
         let circle = sub_img!(15.);
         let warning = sub_img!(16.);
 
-        let monuments = load_texture("assets/monuments.png").await.unwrap().get_texture_data();
+        let monuments = load_texture("assets/monuments.png")
+            .await
+            .unwrap()
+            .get_texture_data();
         let monument_red_blue = sub_img!(monuments, 0., 24., 25.);
         let monument_black_green = sub_img!(monuments, 1., 24., 25.);
         let monument_black_blue = sub_img!(monuments, 2., 24., 25.);
@@ -185,18 +199,41 @@ impl Textures {
     fn draw_texture_at_logical(&self, texture: Texture2D, pos: Vec2) {
         let pos = logical_to_physical(pos - Vec2 { x: 0., y: 1. });
         let size = logical_to_physical(Vec2 { x: 12., y: 13. });
-        draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size), ..Default::default()})
+        draw_texture_ex(
+            texture,
+            pos.x,
+            pos.y,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(size),
+                ..Default::default()
+            },
+        )
     }
 
     fn draw_texture_at_grid(&self, texture: Texture2D, pos: Pos) {
         let pos = logical_to_physical(grid_to_logical(pos) - Vec2 { x: 0., y: 1. });
         let size = logical_to_physical(Vec2 { x: 12., y: 13. });
-        draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()})
+        draw_texture_ex(
+            texture,
+            pos.x,
+            pos.y,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(size.into()),
+                ..Default::default()
+            },
+        )
     }
 
     fn draw(&self, game: &TnEGame, cell: &Cell, pos: Pos) {
         let texture = if cell.terrain == Terrain::MonumentTopLeft {
-            let m = game.monuments.iter().filter(|m|m.pos_top_left == pos).next().unwrap();
+            let m = game
+                .monuments
+                .iter()
+                .filter(|m| m.pos_top_left == pos)
+                .next()
+                .unwrap();
             let texture = match m.monument_type {
                 MonumentType::RedBlue => self.monument_red_blue,
                 MonumentType::BlackGreen => self.monument_black_green,
@@ -208,7 +245,16 @@ impl Textures {
 
             let pos = logical_to_physical(grid_to_logical(pos) - Vec2 { x: 0., y: 1. });
             let size = logical_to_physical(Vec2 { x: 25., y: 24. });
-            draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()});
+            draw_texture_ex(
+                texture,
+                pos.x,
+                pos.y,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(size.into()),
+                    ..Default::default()
+                },
+            );
             return;
         } else if cell.terrain == Terrain::Monument {
             None
@@ -274,17 +320,21 @@ impl GameUIState {
         let player = &game.players.0[0];
         let hand = player.hand_to_vec();
         let mut hand: Vec<_> = hand.into_iter().map(Result::Ok).collect();
-        
+
         for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].iter() {
             if player.get_leader(*leader).is_none() {
                 hand.push(Err(*leader));
             }
         }
 
-        self.tiles = hand.iter().enumerate().map(|(i, t)| Tile {
-            logical_pos: vec2(HAND_X, HAND_Y + i as f32 * 12. + 2. * i as f32),
-            holding_type: *t,
-        }).collect();
+        self.tiles = hand
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Tile {
+                logical_pos: vec2(HAND_X, HAND_Y + i as f32 * 12. + 2. * i as f32),
+                holding_type: *t,
+            })
+            .collect();
     }
 }
 
@@ -306,10 +356,16 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
         clear_background(LIGHTGRAY);
 
         // draw the map
-        draw_texture_ex(map, 0., 0., WHITE, DrawTextureParams {
-            dest_size: Some(vec2(screen_width(), screen_height())),
-            ..Default::default()
-        });
+        draw_texture_ex(
+            map,
+            0.,
+            0.,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(screen_width(), screen_height())),
+                ..Default::default()
+            },
+        );
 
         // draw internal conflict, behind tiles
         if let Some(conflict) = game.internal_conflict.as_ref() {
@@ -318,12 +374,22 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
         }
 
         // draw unification tile
-        if let Some(unification_tile_pos) = game.external_conflict.as_ref().map(|i|i.unification_tile_pos) {
+        if let Some(unification_tile_pos) = game
+            .external_conflict
+            .as_ref()
+            .map(|i| i.unification_tile_pos)
+        {
             textures.draw_texture_at_grid(textures.unification, unification_tile_pos);
         }
 
         // draw external conflict, a black circle surrounding leaders
-        if let PlayerAction::SelectLeader { red, blue, green, black } = game.next_action() {
+        if let PlayerAction::SelectLeader {
+            red,
+            blue,
+            green,
+            black,
+        } = game.next_action()
+        {
             for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
                 let in_conflict = match leader {
                     Leader::Red => red,
@@ -338,7 +404,9 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
 
                 if let Some(pos) = game.players.get_mut(Player::Player1).get_leader(leader) {
                     textures.draw_texture_at_grid(textures.circle, pos);
-                    if is_mouse_button_pressed(MouseButton::Left) && in_tile(mouse_logical, grid_to_logical(pos)) {
+                    if is_mouse_button_pressed(MouseButton::Left)
+                        && in_tile(mouse_logical, grid_to_logical(pos))
+                    {
                         process(&mut game, Action::WarSelectLeader { leader });
                     }
                 }
@@ -358,7 +426,8 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                 textures.draw_texture_at_grid(textures.treasure_blue, t);
 
                 // if clicked on those tiles, take the treasure
-                if logical_to_grid(mouse_logical) == t && is_mouse_button_pressed(MouseButton::Left) {
+                if logical_to_grid(mouse_logical) == t && is_mouse_button_pressed(MouseButton::Left)
+                {
                     process(&mut game, Action::TakeTreasure(t));
                     ui_state.update_hand(&game);
                 }
@@ -406,7 +475,10 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
 
                     let action = match holding_type {
                         Ok(tile_type) => Action::PlaceTile { to: pos, tile_type },
-                        Err(leader) => Action::MoveLeader { movement: Movement::Place(pos), leader},
+                        Err(leader) => Action::MoveLeader {
+                            movement: Movement::Place(pos),
+                            leader,
+                        },
                     };
 
                     if let Ok(()) = game.validate_action(action, game.next_state()) {
@@ -417,9 +489,15 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                 ui_state.selected = None;
             }
 
-            for (i, Tile {logical_pos: pos, ..}) in ui_state.tiles.iter_mut().enumerate() {
+            for (
+                i,
+                Tile {
+                    logical_pos: pos, ..
+                },
+            ) in ui_state.tiles.iter_mut().enumerate()
+            {
                 if in_tile(mouse_logical, *pos) {
-                    ui_state.selected = Some(i); 
+                    ui_state.selected = Some(i);
                     break;
                 }
             }
@@ -440,8 +518,14 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                 let y = grid_y * 13. + LOGICAL_GRID_START_Y;
 
                 let action = match holding_type {
-                    Ok(tile_type) => Action::PlaceTile { to: pos!(grid_y as u8, grid_x as u8), tile_type },
-                    Err(leader) => Action::MoveLeader { movement: Movement::Place(pos!(grid_y as u8, grid_x as u8)), leader},
+                    Ok(tile_type) => Action::PlaceTile {
+                        to: pos!(grid_y as u8, grid_x as u8),
+                        tile_type,
+                    },
+                    Err(leader) => Action::MoveLeader {
+                        movement: Movement::Place(pos!(grid_y as u8, grid_x as u8)),
+                        leader,
+                    },
                 };
                 match game.validate_action(action, game.next_state()) {
                     Ok(_) => Some(vec2(x, y)),
@@ -492,12 +576,18 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             let (e2, s2) = calculate_score(Player::Player2);
             let player_state = game.players.get_mut(Player::Player1);
             print!("\t[Score: {} - {}]", s1, s2);
-            print!("[r({}) - black({}) - blue({}) - g({})]", player_state.score_red, player_state.score_black, player_state.score_blue, player_state.score_green);
+            print!(
+                "[r({}) - black({}) - blue({}) - g({})]",
+                player_state.score_red,
+                player_state.score_black,
+                player_state.score_blue,
+                player_state.score_green
+            );
             println!("[Eval: {} - {}]", e1, e2);
         }
 
         if game.state.is_empty() {
-            // game is over 
+            // game is over
             screenshot("gameover.png");
             return;
         }
@@ -514,30 +604,43 @@ fn mouse_position_logical() -> Vec2 {
     mouse_logical
 }
 
-fn in_grid(Vec2{x,y}: Vec2) -> bool {
-    x > LOGICAL_GRID_START_X && x < LOGICAL_GRID_START_X + 12. * W as f32 + W as f32
-    && y > LOGICAL_GRID_START_Y && y < LOGICAL_GRID_START_Y + 12. * H as f32 + H as f32
+fn in_grid(Vec2 { x, y }: Vec2) -> bool {
+    x > LOGICAL_GRID_START_X
+        && x < LOGICAL_GRID_START_X + 12. * W as f32 + W as f32
+        && y > LOGICAL_GRID_START_Y
+        && y < LOGICAL_GRID_START_Y + 12. * H as f32 + H as f32
 }
 
 pub fn start(game: TnEGame) {
-    let small = Image::from_file_with_format(include_bytes!("../assets/icon_small.png"), None).bytes.leak().try_into().unwrap();
-    let medium = Image::from_file_with_format(include_bytes!("../assets/icon_medium.png"), None).bytes.leak().try_into().unwrap();
-    let big = Image::from_file_with_format(include_bytes!("../assets/icon_big.png"), None).bytes.leak().try_into().unwrap();
-    let icon = Icon {
-        small,
-        medium,
-        big
-    };
+    let small = Image::from_file_with_format(include_bytes!("../assets/icon_small.png"), None)
+        .bytes
+        .leak()
+        .try_into()
+        .unwrap();
+    let medium = Image::from_file_with_format(include_bytes!("../assets/icon_medium.png"), None)
+        .bytes
+        .leak()
+        .try_into()
+        .unwrap();
+    let big = Image::from_file_with_format(include_bytes!("../assets/icon_big.png"), None)
+        .bytes
+        .leak()
+        .try_into()
+        .unwrap();
+    let icon = Icon { small, medium, big };
 
-    macroquad::Window::from_config(Conf {
-        window_title: "Tigris and Euphrates".to_string(),
-        window_width: 240 * 5,
-        window_height: 160 * 5,
-        high_dpi: false,
-        window_resizable: false,
-        icon: Some(icon),
-        ..Default::default()
-    }, run(game, None));
+    macroquad::Window::from_config(
+        Conf {
+            window_title: "Tigris and Euphrates".to_string(),
+            window_width: 240 * 5,
+            window_height: 160 * 5,
+            high_dpi: false,
+            window_resizable: false,
+            icon: Some(icon),
+            ..Default::default()
+        },
+        run(game, None),
+    );
 }
 
 fn process(game: &mut TnEGame, action: Action) {

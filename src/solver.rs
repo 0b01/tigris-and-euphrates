@@ -1,6 +1,6 @@
 use minimax::Zobrist;
 
-use crate::game::{TnEGame, GameState, Player, PlayerAction, Action, Leader, Movement, H, W};
+use crate::game::{Action, GameState, Leader, Movement, Player, PlayerAction, TnEGame, H, W};
 
 pub struct TigrisAndEuphrates;
 
@@ -74,25 +74,40 @@ impl PlayerAction {
             PlayerAction::AddSupport(tile_type) => {
                 let max = state.players.get_mut(current_player).get_hand(*tile_type);
                 for n in 0..=max {
-                    moves.push(TnEMove::new(state.clone(), Action::AddSupport {tile_type: *tile_type, n}));
+                    moves.push(TnEMove::new(
+                        state.clone(),
+                        Action::AddSupport {
+                            tile_type: *tile_type,
+                            n,
+                        },
+                    ));
                 }
             }
             PlayerAction::Normal => {
                 // place tile
                 let player = state.players.get_mut(current_player);
-                for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
+                for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
+                {
                     if let Some(leader_pos) = player.get_leader(leader) {
                         if player.get_hand(leader.as_tile_type()) == 0 {
                             continue;
                         }
 
-                        let spaces = state.board.find_empty_spaces_adj_kingdom(leader_pos, leader == Leader::Blue);
+                        let spaces = state
+                            .board
+                            .find_empty_spaces_adj_kingdom(leader_pos, leader == Leader::Blue);
                         for to in spaces {
                             if state.board.neighboring_kingdoms(to).len() as u8 > 2 {
                                 continue;
                             }
 
-                            moves.push(TnEMove::new(state.clone(), Action::PlaceTile { to, tile_type: leader.as_tile_type() }));
+                            moves.push(TnEMove::new(
+                                state.clone(),
+                                Action::PlaceTile {
+                                    to,
+                                    tile_type: leader.as_tile_type(),
+                                },
+                            ));
                         }
                     }
                 }
@@ -104,19 +119,32 @@ impl PlayerAction {
                 for pos in state.board.find_empty_leader_space_next_to_red() {
                     let mut visited = [[false; W]; H];
                     let kingdom = state.board.find_kingdom(pos, &mut visited);
-                    for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
-                        if let Some(from) = state.players.get_mut(current_player).get_leader(leader) {
-                            // only move when the position is in enemy's kingdom 
-                            if let Some(possible_enemy) = kingdom.get_leader_info(leader).map(|l| l.0) {
+                    for leader in
+                        [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
+                    {
+                        if let Some(from) = state.players.get_mut(current_player).get_leader(leader)
+                        {
+                            // only move when the position is in enemy's kingdom
+                            if let Some(possible_enemy) =
+                                kingdom.get_leader_info(leader).map(|l| l.0)
+                            {
                                 if possible_enemy != current_player {
-                                    moves.push(TnEMove::new(state.clone(),
-                                        Action::MoveLeader { movement: Movement::Move{from, to: pos}, leader},
+                                    moves.push(TnEMove::new(
+                                        state.clone(),
+                                        Action::MoveLeader {
+                                            movement: Movement::Move { from, to: pos },
+                                            leader,
+                                        },
                                     ));
                                 }
                             }
                         } else {
-                            moves.push(TnEMove::new(state.clone(),
-                                Action::MoveLeader { movement: Movement::Place(pos), leader},
+                            moves.push(TnEMove::new(
+                                state.clone(),
+                                Action::MoveLeader {
+                                    movement: Movement::Place(pos),
+                                    leader,
+                                },
                             ));
                         }
 
@@ -137,40 +165,58 @@ impl PlayerAction {
                 //     move_: Action::Pass,
                 // });
             }
-            PlayerAction::SelectLeader { red, blue, green, black } => {
+            PlayerAction::SelectLeader {
+                red,
+                blue,
+                green,
+                black,
+            } => {
                 if *red {
-                    moves.push(TnEMove::new(state.clone(),
-                        Action::WarSelectLeader { leader: Leader::Red },
+                    moves.push(TnEMove::new(
+                        state.clone(),
+                        Action::WarSelectLeader {
+                            leader: Leader::Red,
+                        },
                     ));
                 }
                 if *blue {
                     moves.push(TnEMove::new(
                         state.clone(),
-                        Action::WarSelectLeader { leader: Leader::Blue },
+                        Action::WarSelectLeader {
+                            leader: Leader::Blue,
+                        },
                     ));
                 }
                 if *green {
-                    moves.push(TnEMove::new(state.clone(),
-                        Action::WarSelectLeader { leader: Leader::Green },
+                    moves.push(TnEMove::new(
+                        state.clone(),
+                        Action::WarSelectLeader {
+                            leader: Leader::Green,
+                        },
                     ));
                 }
                 if *black {
-                    moves.push(TnEMove::new(state.clone(),
-                        Action::WarSelectLeader { leader: Leader::Black },
+                    moves.push(TnEMove::new(
+                        state.clone(),
+                        Action::WarSelectLeader {
+                            leader: Leader::Black,
+                        },
                     ));
                 }
             }
             PlayerAction::TakeTreasure(ts) => {
-                moves.push(TnEMove::new(state.clone(),
-                    Action::TakeTreasure(ts[0]),
-                ));
-                moves.push(TnEMove::new(state.clone(),
-                    Action::TakeTreasure(ts[1]),
-                ));
+                moves.push(TnEMove::new(state.clone(), Action::TakeTreasure(ts[0])));
+                moves.push(TnEMove::new(state.clone(), Action::TakeTreasure(ts[1])));
             }
             PlayerAction::BuildMonument(pos, types) => {
                 for t in types {
-                    moves.push(TnEMove { old_state: state.clone(), move_: Action::BuildMonument { monument_type: *t, pos_top_left: *pos } });
+                    moves.push(TnEMove {
+                        old_state: state.clone(),
+                        move_: Action::BuildMonument {
+                            monument_type: *t,
+                            pos_top_left: *pos,
+                        },
+                    });
                 }
             }
         }
