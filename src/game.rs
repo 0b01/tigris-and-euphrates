@@ -1,7 +1,21 @@
+use std::ops::Add;
+
 use packed_struct::prelude::*;
 
 pub const W: usize = 16;
 pub const H: usize = 11;
+
+#[macro_export]
+macro_rules! pos {
+    // compile time convert 1A to 00
+    ($s:expr) => {
+        pos($s)
+    };
+
+    ($x:expr, $y:expr) => {
+        Pos { x: $x, y: $y }
+    };
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Players(pub [PlayerState; 2]);
@@ -20,10 +34,19 @@ impl Players {
 }
 
 #[derive(Clone, Eq, PartialEq)]
+pub struct Monument {
+    pub monument_type: MonumentType,
+    pub monument_top_left: Pos,
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct TnEGame {
     pub board: Board,
     pub players: Players,
     bag: Tiles,
+
+    pub available_monuments: Vec<MonumentType>,
+    pub monuments: Vec<Monument>,
 
     pub state: Vec<GameState>,
 
@@ -32,6 +55,9 @@ pub struct TnEGame {
 
     /// the last player who executed 2 actions
     pub last_player: Player,
+
+    /// the last player who executed a normal action
+    pub last_player_normal_action: Player,
 
     /// the last player who executed an action
     pub last_action_player: Player,
@@ -121,6 +147,15 @@ impl TnEGame {
             board: Board::new(),
             players: Players([PlayerState::new(); 2]),
             state: vec![GameState::Normal],
+            available_monuments: vec![
+                MonumentType::RedGreen,
+                MonumentType::RedBlue,
+                MonumentType::GreenBlue,
+                MonumentType::BlackRed,
+                MonumentType::BlackGreen,
+                MonumentType::BlackBlue,
+            ],
+            monuments: vec![],
             bag: Tiles {
                 red: 57,
                 black: 30,
@@ -133,6 +168,7 @@ impl TnEGame {
             external_conflict: None,
             last_player: Player::None,
             last_action_player: Player::None,
+            last_player_normal_action: Player::None,
         };
 
         // initial draw for players, each player draws 6 tiles
@@ -155,6 +191,7 @@ impl TnEGame {
             | (GameState::Normal, Action::Pass)
             | (GameState::TakeTreasure, Action::TakeTreasure { .. })
             | (GameState::WarSelectLeader, Action::WarSelectLeader { .. })
+            | (GameState::BuildMonument, Action::BuildMonument { .. })
             | (GameState::AddSupport, Action::AddSupport { .. }) => true,
             _ => false,
         };
@@ -229,6 +266,9 @@ impl TnEGame {
                 }
                 // cannot be placed if the destination contains a leader
                 let cell = self.board.get(to);
+                if cell.terrain == Terrain::Monument || cell.terrain == Terrain::MonumentTopLeft {
+                    return Err(Error::CannotPlaceCatastropheOnMonument);
+                }
                 if cell.leader != Leader::None {
                     return Err(Error::CannotPlaceOverLeader);
                 }
@@ -313,15 +353,43 @@ impl TnEGame {
                 }
             }
             Action::Pass => {}
+            Action::BuildMonument { monument_type, pos_top_left } => {
+                let top_left = self.board.get(pos_top_left);
+                let top_right = self.board.get(pos_top_left + pos!(0, 1));
+                let bottom_left = self.board.get(pos_top_left + pos!(1, 0));
+                let bottom_right = self.board.get(pos_top_left + pos!(1, 1));
+                if top_left.tile_type != top_right.tile_type
+                    || top_left.tile_type != bottom_left.tile_type
+                    || top_left.tile_type != bottom_right.tile_type
+                    || !monument_type.matches(top_left.tile_type)
+                {
+                    return Err(Error::MonumentNot2x2);
+                }
+            }
         }
 
         Ok(())
     }
 
-    pub fn process_action(&mut self, action: Action, current_player: Player) -> Option<GameState> {
+    pub fn process_action(&mut self, action: Action, current_player: Player, check_treasure: &mut bool) -> Option<GameState> {
         let curr_player = self.players.get_mut(current_player);
 
         let next_state = match action {
+            Action::BuildMonument { monument_type, pos_top_left } => {
+                let positions = [pos_top_left, pos_top_left.right(), pos_top_left.down(), pos_top_left.down().right()];
+                for pos in positions.iter() {
+                    let cell = self.board.get(*pos);
+                    cell.terrain = Terrain::Monument;
+                }
+                self.board.get(pos_top_left).terrain = Terrain::MonumentTopLeft;
+
+                self.monuments.push(Monument {
+                    monument_type,
+                    monument_top_left: pos_top_left,
+                });
+
+                Some(GameState::Normal)
+            }
             Action::TakeTreasure(pos) => {
                 let cell = self.board.get(pos);
                 cell.terrain = Terrain::Empty;
@@ -468,6 +536,7 @@ impl TnEGame {
                     if let Some(conflicts) = &mut self.external_conflict {
                         if conflicts.conflicts.is_empty() {
                             self.external_conflict = None;
+                            *check_treasure = true;
                             Some(GameState::Normal)
                         } else {
                             let red = conflicts.conflicts.iter().any(|c| c.leader == Leader::Red);
@@ -480,6 +549,7 @@ impl TnEGame {
                             Some(GameState::WarSelectLeader)
                         }
                     } else {
+                        *check_treasure = true;
                         Some(GameState::Normal)
                     }
                 } else {
@@ -602,6 +672,8 @@ impl TnEGame {
                         (None, Some(p)) => self.players.get_mut(p).add_score(tile_type),
                         (None, None) => (),
                     }
+
+                    *check_treasure = true;
                     Some(GameState::Normal)
                 }
             }
@@ -609,6 +681,9 @@ impl TnEGame {
                 match movement {
                     Movement::Place(pos) => {
                         let next_state = self.check_internal_conflict(pos, leader, current_player);
+                        if next_state == GameState::Normal {
+                            *check_treasure = true;
+                        }
 
                         let cell = self.board.get(pos);
                         cell.leader = leader;
@@ -618,6 +693,9 @@ impl TnEGame {
                     }
                     Movement::Move { from, to } => {
                         let next_state = self.check_internal_conflict(to, leader, current_player);
+                        if next_state == GameState::Normal {
+                            *check_treasure = true;
+                        }
 
                         self.players.get_mut(current_player).set_leader(leader, Some(to));
                         let from_cell = self.board.get(from);
@@ -719,10 +797,23 @@ impl TnEGame {
         }
     }
 
-    fn set_next_player_if_empty(&mut self) {
+    fn set_next_player_if_player_turn_over(&mut self) {
+        // if is turn over
         if self.play_action_stack.is_empty() {
             let current_player = self.player_turn;
-            let curr_player = self.players.get_mut(current_player);
+
+            // add points from monuments
+            for Monument { monument_type, monument_top_left } in &self.monuments {
+                let mut visited = [[false; W]; H];
+                let kingdom = self.board.find_kingdom(*monument_top_left, &mut visited);
+                for leader in monument_type.unpack() {
+                    if let Some((p, _, _)) = kingdom.get_leader_info(leader) {
+                        if p == current_player {
+                            self.players.get_mut(current_player).add_score(leader.as_tile_type());
+                        }
+                    }
+                }
+            }
 
             let opposite = match current_player {
                 Player::None => unreachable!(),
@@ -739,7 +830,6 @@ impl TnEGame {
         }
     }
 
-    // TODO: add monuments
     pub fn process(&mut self, action: Action) -> Result<(Player, PlayerAction)> {
         let current_state = self.state.pop().ok_or(Error::GameOver)?;
         if let Err(e) = self.validate_action(action, current_state) {
@@ -747,14 +837,30 @@ impl TnEGame {
             return Err(e);
         }
         let (current_player, _) = self.play_action_stack.pop().unwrap();
-        let next_state = self.process_action(action, current_player);
-        self.last_action_player = current_player;
-        // println!("{:?} => {:?}", self.state, next_state);
+        let mut check_treasure = false;
+        let next_state = self.process_action(action, current_player, &mut check_treasure);
+        if current_state == GameState::Normal {
+            self.last_player_normal_action = current_player;
+        }
         if let Some(next_state) = next_state {
             self.state.push(next_state);
         }
-        self.set_next_player_if_empty();
 
+        if check_treasure {
+            self.check_treasure();
+            if let Action::PlaceTile { to, tile_type } = action {
+                self.check_monument(to, tile_type);
+            }
+        }
+
+        self.last_action_player = current_player;
+        self.set_next_player_if_player_turn_over();
+
+        self.last_player = current_player;
+        Ok(self.next())
+    }
+
+    fn check_treasure(&mut self) {
         // check if treasure is available for taking
         // TODO: must take corner treasures first
         for kingdom in self.board.kingdoms() {
@@ -766,10 +872,55 @@ impl TnEGame {
                 self.state.push(GameState::TakeTreasure);
             }
         }
-
-        self.last_player = current_player;
-        Ok(self.next())
     }
+
+    fn check_monument(&mut self, pos: Pos, color: TileType) {
+        // monument can be built on a 2x2 square made of same tiles
+        // check if monument is available for building
+        let mut monument = false;
+        let mut top_left = None;
+        // if pos is top left
+        if pos.x < H as u8 -1 && pos.y < W as u8 -1 {
+            let to_check = [pos, pos.right(), pos.down(), pos.down().right()];
+            if to_check.iter().all(|p| self.board.get(*p).tile_type == color) {
+                monument = true;
+                top_left = Some(pos);
+            }
+        }
+        // if pos is top right
+        if pos.x < H as u8 - 1 && pos.y > 0 {
+            let to_check = [pos, pos.left(), pos.down(), pos.down().left()];
+            if to_check.iter().all(|p| self.board.get(*p).tile_type == color) {
+                monument = true;
+                top_left = Some(pos.left());
+            }
+        }
+        // if pos is bottom left
+        if pos.x > 0 && pos.y < W as u8 - 1 {
+            let to_check = [pos, pos.right(), pos.up(), pos.up().right()];
+            if to_check.iter().all(|p| self.board.get(*p).tile_type == color) {
+                monument = true;
+                top_left = Some(pos.up());
+            }
+        }
+        // if pos is bottom right
+        if pos.x > 0 && pos.y > 0 {
+            let to_check = [pos, pos.left(), pos.up(), pos.up().left()];
+            if to_check.iter().all(|p| self.board.get(*p).tile_type == color) {
+                monument = true;
+                top_left = Some(pos.up().left());
+            }
+        }
+
+        let avail = self.available_monuments.iter().filter(|c| c.matches(color)).copied().collect::<Vec<_>>();
+
+        if monument && !avail.is_empty() {
+            self.play_action_stack
+                .push((self.last_player_normal_action, PlayerAction::BuildMonument(top_left.unwrap(), avail)));
+            self.state.push(GameState::BuildMonument);
+        }
+    }
+
 
     #[must_use]
     fn adjacent_to_temple(&self, pos: Pos) -> bool {
@@ -851,7 +1002,7 @@ impl TnEGame {
     }
 
     pub fn next_action(&self) -> PlayerAction {
-        self.play_action_stack.last().map(|(_, a)| *a).unwrap()
+        self.play_action_stack.last().map(|(_, a)| a.clone()).unwrap()
     }
 
     pub fn next_player(&self) -> Player {
@@ -859,7 +1010,7 @@ impl TnEGame {
     }
 
     pub fn next(&self) -> (Player, PlayerAction) {
-        self.play_action_stack.last().copied().unwrap()
+        self.play_action_stack.last().cloned().unwrap()
     }
 
     pub fn next_state(&self) -> GameState {
@@ -873,9 +1024,10 @@ pub enum GameState {
     TakeTreasure,
     AddSupport,
     WarSelectLeader,
+    BuildMonument,
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum PlayerAction {
     AddSupport(TileType),
     SelectLeader {
@@ -886,6 +1038,7 @@ pub enum PlayerAction {
     },
     Normal,
     TakeTreasure([Pos; 2]),
+    BuildMonument(Pos, Vec<MonumentType>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -937,6 +1090,7 @@ impl PartialEq for Conflict {
 pub enum Action {
     WarSelectLeader { leader: Leader },
     AddSupport { tile_type: TileType, n: u8 },
+    BuildMonument { monument_type: MonumentType, pos_top_left: Pos },
     PlaceTile { to: Pos, tile_type: TileType },
     TakeTreasure(Pos),
     MoveLeader { movement: Movement, leader: Leader },
@@ -1039,6 +1193,17 @@ pub struct Pos {
     pub y: u8,
 }
 
+impl Add for Pos {
+    type Output = Pos;
+
+    fn add(self, other: Pos) -> Pos {
+        Pos {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
+
 impl std::fmt::Debug for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self)
@@ -1051,18 +1216,6 @@ impl std::fmt::Display for Pos {
         let row = self.x+1;
         write!(f, "{}{}", row, col)
     }
-}
-
-#[macro_export]
-macro_rules! pos {
-    // compile time convert 1A to 00
-    ($s:expr) => {
-        pos($s)
-    };
-
-    ($x:expr, $y:expr) => {
-        Pos { x: $x, y: $y }
-    };
 }
 
 pub const fn pos(a: &'static str) -> Pos {
@@ -1088,6 +1241,22 @@ impl Pos {
             ret.push(pos!(self.x, self.y + 1));
         }
         ret
+    }
+
+    fn right(&self) -> Pos {
+        Self { x: self.x, y: self.y + 1}
+    }
+
+    fn left(&self) -> Pos {
+        Self { x: self.x, y: self.y - 1}
+    }
+
+    fn up(&self) -> Pos {
+        Self { x: self.x - 1, y: self.y}
+    }
+
+    fn down(&self) -> Pos {
+        Self { x: self.x + 1, y: self.y}
     }
 }
 
@@ -1561,6 +1730,9 @@ impl Board {
             visited[pos.x as usize][pos.y as usize] = true;
 
             let cell = self.get(pos);
+            if cell.terrain == Terrain::UnificationTile {
+                continue;
+            }
 
             // skip any red tiles that are next to a leader
             let nearby_leader = pos.neighbors().iter().any(|pos| {
@@ -1568,11 +1740,13 @@ impl Board {
                 cell.leader != Leader::None
             });
             let leader_near_red = cell.tile_type == TileType::Red && nearby_leader;
-            if cell.tile_type == tile_type && !leader_near_red {
+            // can't destroy monument tiles
+            if cell.tile_type == tile_type && !leader_near_red &&
+                cell.terrain != Terrain::Monument && cell.terrain != Terrain::MonumentTopLeft {
                 ret.push(pos);
             }
 
-            if cell.is_connectable() && cell.terrain != Terrain::UnificationTile {
+            if cell.is_connectable() {
                 for neighbor_pos in pos.neighbors() {
                     stack.push(neighbor_pos);
                 }
@@ -1610,6 +1784,49 @@ impl Cell {
         self.tile_type != TileType::Empty
             || self.leader != Leader::None
             || self.terrain == Terrain::UnificationTile
+    }
+}
+
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonumentType {
+    RedGreen,
+    RedBlue,
+    GreenBlue,
+    BlackRed,
+    BlackGreen,
+    BlackBlue,
+}
+impl MonumentType {
+    fn matches(&self, color: TileType) -> bool {
+        match (color, self) {
+            (TileType::Red, MonumentType::BlackRed) => true,
+            (TileType::Red, MonumentType::RedGreen) => true,
+            (TileType::Red, MonumentType::RedBlue) => true,
+
+            (TileType::Green, MonumentType::BlackGreen) => true,
+            (TileType::Green, MonumentType::RedGreen) => true,
+            (TileType::Green, MonumentType::GreenBlue) => true,
+
+            (TileType::Blue, MonumentType::GreenBlue) => true,
+            (TileType::Blue, MonumentType::RedBlue) => true,
+            (TileType::Blue, MonumentType::BlackBlue) => true,
+
+            (TileType::Black, MonumentType::BlackRed) => true,
+            (TileType::Black, MonumentType::BlackGreen) => true,
+            (TileType::Black, MonumentType::BlackBlue) => true,
+            _ => false,
+        }
+    }
+
+    fn unpack(&self) -> [Leader; 2] {
+        match self {
+            MonumentType::RedGreen => [Leader::Red, Leader::Green],
+            MonumentType::RedBlue => [Leader::Red, Leader::Blue],
+            MonumentType::GreenBlue => [Leader::Green, Leader::Blue],
+            MonumentType::BlackRed => [Leader::Black, Leader::Red],
+            MonumentType::BlackGreen => [Leader::Black, Leader::Green],
+            MonumentType::BlackBlue => [Leader::Black, Leader::Blue],
+        }
     }
 }
 
@@ -1668,9 +1885,11 @@ pub enum Terrain {
     River,
     Catastrophe,
     UnificationTile,
+    MonumentTopLeft,
+    Monument,
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -1698,12 +1917,12 @@ pub enum Error {
     GameOver,
     CannotPlaceOverTreasure,
     LeaderAlreadyPlaced,
+    MonumentNot2x2,
+    CannotPlaceCatastropheOnMonument,
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::visualizer;
-
     use super::*;
 
     #[test]
@@ -2215,5 +2434,25 @@ mod tests {
         game.process(Action::AddSupport { tile_type: TileType::Black, n: 0 }).unwrap();
         assert_eq!(game.board.get(pos!(0, 2)).tile_type, TileType::Empty);
         assert_eq!(game.next_state(), GameState::Normal);
+    }
+
+    #[test]
+    fn test_monument() {
+        let mut game = TnEGame::new();
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { to: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { to: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { to: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+        assert_eq!(game.next(), (Player::Player2, PlayerAction::BuildMonument(pos!(0,0), vec![
+            MonumentType::RedGreen,
+            MonumentType::RedBlue,
+            MonumentType::BlackRed])));
+        game.process(Action::BuildMonument { pos_top_left: pos!(0, 0), monument_type: MonumentType::RedGreen }).unwrap();
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(2, 0)), leader: Leader::Green }).unwrap();
+        assert_eq!(game.players.0[1].score_green, 1);
     }
 }

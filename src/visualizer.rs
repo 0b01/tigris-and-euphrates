@@ -1,10 +1,8 @@
-use std::pin::Pin;
-
 use macroquad::{prelude::*, miniquad::conf::Icon};
-use minimax::{Negamax, Strategy, Move};
+use minimax::{Negamax, Strategy};
 
 use crate::{pos, solver::Evaluator};
-use crate::game::{TnEGame, Cell, Terrain, TileType, Leader, Player, W, H, Action, Pos, Movement, PlayerAction};
+use crate::game::{TnEGame, Cell, Terrain, TileType, Leader, Player, W, H, Action, Pos, Movement, PlayerAction, Monument, MonumentType};
 
 // the top left corner of the grid
 const LOGICAL_GRID_START_Y: f32 = 8.;
@@ -69,6 +67,13 @@ pub struct Textures {
     t_green: Texture2D,
     circle: Texture2D,
     warning: Texture2D,
+
+    monument_red_blue: Texture2D,
+    monument_red_green: Texture2D,
+    monument_green_blue: Texture2D,
+    monument_black_red: Texture2D,
+    monument_black_green: Texture2D,
+    monument_black_blue: Texture2D,
 }
 
 impl Textures {
@@ -78,7 +83,16 @@ impl Textures {
             ($i:expr) => {
                 {
                     let t = Texture2D::from_image(
-                        &tiles.sub_image(Rect { x: 0. + 12. * $i, y: 0., w: 12., h: 13. })
+                        &tiles.sub_image(Rect { x: 12. * $i, y: 0., w: 12., h: 13. })
+                    );
+                    t.set_filter(FilterMode::Nearest);
+                    t
+                }
+            };
+            ($f:expr, $i:expr, $h:expr, $w:expr) => {
+                {
+                    let t = Texture2D::from_image(
+                        &$f.sub_image(Rect { x: $w * $i, y: 0., w: $w, h: $h })
                     );
                     t.set_filter(FilterMode::Nearest);
                     t
@@ -106,7 +120,22 @@ impl Textures {
         let circle = sub_img!(15.);
         let warning = sub_img!(16.);
 
+        let monuments = load_texture("assets/monuments.png").await.unwrap().get_texture_data();
+        let monument_red_blue = sub_img!(monuments, 0., 24., 25.);
+        let monument_black_green = sub_img!(monuments, 1., 24., 25.);
+        let monument_black_blue = sub_img!(monuments, 2., 24., 25.);
+        let monument_black_red = sub_img!(monuments, 3., 24., 25.);
+        let monument_green_blue = sub_img!(monuments, 4., 24., 25.);
+        let monument_red_green = sub_img!(monuments, 5., 24., 25.);
+
         Self {
+            monument_red_blue,
+            monument_black_blue,
+            monument_black_green,
+            monument_black_red,
+            monument_green_blue,
+            monument_red_green,
+
             unification,
             treasure_blue,
             bull_blue,
@@ -165,8 +194,25 @@ impl Textures {
         draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()})
     }
 
-    fn draw(&self, cell: &Cell, pos: Pos) {
-        let texture = if cell.terrain == Terrain::Treasure {
+    fn draw(&self, game: &TnEGame, cell: &Cell, pos: Pos) {
+        let texture = if cell.terrain == Terrain::MonumentTopLeft {
+            let m = game.monuments.iter().filter(|m|m.monument_top_left == pos).next().unwrap();
+            let texture = match m.monument_type {
+                MonumentType::RedBlue => self.monument_red_blue,
+                MonumentType::BlackGreen => self.monument_black_green,
+                MonumentType::BlackBlue => self.monument_black_blue,
+                MonumentType::BlackRed => self.monument_black_red,
+                MonumentType::GreenBlue => self.monument_green_blue,
+                MonumentType::RedGreen => self.monument_red_green,
+            };
+
+            let pos = logical_to_physical(grid_to_logical(pos) - Vec2 { x: 0., y: 1. });
+            let size = logical_to_physical(Vec2 { x: 25., y: 24. });
+            draw_texture_ex(texture, pos.x, pos.y, WHITE, DrawTextureParams { dest_size: Some(size.into()), ..Default::default()});
+            return;
+        } else if cell.terrain == Terrain::Monument {
+            None
+        } else if cell.terrain == Terrain::Treasure {
             Some(self.t_red_treasure)
         } else if cell.tile_type == TileType::Red {
             Some(self.t_red)
@@ -243,6 +289,10 @@ impl GameUIState {
 }
 
 async fn run(mut game: TnEGame, draw_only: Option<&str>) {
+    // // example monument:
+    // game.board.0[0][0].terrain = Terrain::MonumentTopLeft;
+    // game.monuments.push(Monument { monument_type: crate::game::MonumentType::BlackRed, monument_top_left: pos!(0,0) });
+
     let map = load_texture("assets/map.png").await.unwrap();
     map.set_filter(FilterMode::Nearest);
     let textures = Textures::new().await;
@@ -289,10 +339,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                 if let Some(pos) = game.players.get_mut(Player::Player1).get_leader(leader) {
                     textures.draw_texture_at_grid(textures.circle, pos);
                     if is_mouse_button_pressed(MouseButton::Left) && in_tile(mouse_logical, grid_to_logical(pos)) {
-                        let out = game.process(Action::WarSelectLeader { leader });
-                        if out.is_err() {
-                            screenshot("gameover.png");
-                        }
+                        process(&mut game, Action::WarSelectLeader { leader });
                     }
                 }
             }
@@ -301,7 +348,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
         // draw the tiles
         for (i, row) in game.board.0.iter().enumerate() {
             for (j, cell) in row.iter().enumerate() {
-                textures.draw(cell, pos!(i as u8, j as u8));
+                textures.draw(&game, cell, pos!(i as u8, j as u8));
             }
         }
 
@@ -312,12 +359,14 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
 
                 // if clicked on those tiles, take the treasure
                 if logical_to_grid(mouse_logical) == t && is_mouse_button_pressed(MouseButton::Left) {
-                    if let Err(e) = game.process(Action::TakeTreasure(t)) {
-                        dbg!(e);
-                    }
+                    process(&mut game, Action::TakeTreasure(t));
                     ui_state.update_hand(&game);
                 }
             }
+        }
+
+        if is_key_pressed(KeyCode::P) {
+            process(&mut game, Action::Pass);
         }
 
         // if we can add support, check if we pressed a number key
@@ -340,10 +389,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
         };
         if let Some(n) = n {
             if let PlayerAction::AddSupport(tile_type) = game.next_action() {
-                if let Err(e) = game.process(Action::AddSupport { tile_type, n }) {
-                    screenshot("gameover.png");
-                    dbg!(e);
-                }
+                process(&mut game, Action::AddSupport { tile_type, n });
             }
         }
 
@@ -364,7 +410,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                     };
 
                     if let Ok(()) = game.validate_action(action, game.next_state()) {
-                        game.process(action).unwrap();
+                        process(&mut game, action);
                     }
                 }
 
@@ -427,7 +473,6 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
 
         // if the next player is the AI, let it play, could take a while
         if game.next_player() == Player::Player2 {
-            println!("Player 2's turn. Thinking...");
             let m = ai_strategy.choose_move(&mut game);
             if m.is_none() {
                 // take a screenshot
@@ -436,8 +481,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             }
 
             let m = m.unwrap();
-            println!("{:?}: {:?}", game.next_player(), &m.move_);
-            m.apply(&mut game);
+            process(&mut game, m.move_);
 
             let calculate_score = |p| {
                 let player_state = game.players.get_mut(p);
@@ -447,7 +491,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             let (e1, s1) = calculate_score(Player::Player1);
             let (e2, s2) = calculate_score(Player::Player2);
             let player_state = game.players.get_mut(Player::Player1);
-            print!("[Score: {} - {}]", s1, s2);
+            print!("\t[Score: {} - {}]", s1, s2);
             print!("[r({}) - black({}) - blue({}) - g({})]", player_state.score_red, player_state.score_black, player_state.score_blue, player_state.score_green);
             println!("[Eval: {} - {}]", e1, e2);
         }
@@ -494,4 +538,13 @@ pub fn start(game: TnEGame) {
         icon: Some(icon),
         ..Default::default()
     }, run(game, None));
+}
+
+fn process(game: &mut TnEGame, action: Action) {
+    let ret = game.process(action);
+    if let Ok(_) = ret {
+        println!("{:?}: {:?}", game.last_action_player, &action);
+    } else {
+        dbg!(ret.unwrap_err());
+    }
 }

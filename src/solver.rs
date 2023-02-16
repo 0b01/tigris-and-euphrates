@@ -168,6 +168,11 @@ impl PlayerAction {
                     Action::TakeTreasure(ts[1]),
                 ));
             }
+            PlayerAction::BuildMonument(pos, types) => {
+                for t in types {
+                    moves.push(TnEMove { old_state: state.clone(), move_: Action::BuildMonument { monument_type: *t, pos_top_left: *pos } });
+                }
+            }
         }
     }
 }
