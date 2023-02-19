@@ -45,7 +45,7 @@ static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
         for y in 0..W {
             let pos = pos!(x as u8, y as u8);
             let mut bitboard = Bitboard::new();
-            bitboard.set(pos);
+            bitboard.0 |= U256::one() << pos.index();
             ret[x][y] = bitboard;
         }
     }
@@ -527,8 +527,8 @@ impl TnEGame {
                             .add_score(c.conflict_leader.as_tile_type());
 
                         // disintegrate tiles
-                        let points = tiles_to_remove.len() as u8;
-                        for pos in tiles_to_remove {
+                        let points = tiles_to_remove.count_ones() as u8;
+                        for pos in tiles_to_remove.iter() {
                             self.board.set_tile_type(pos, TileType::Empty);
                             self.board.set_leader(pos, Leader::None);
                             self.board.set_player(pos, Player::None)
@@ -1620,13 +1620,25 @@ impl Bitboard {
         Self(U256(s))
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
+        let mut mask = self.0;
+        std::iter::from_fn(move || {
+            if mask.is_zero() {
+                None
+            } else {
+                let pos = mask.trailing_zeros() as usize;
+                mask &= !(U256::one() << U256::from(pos));
+                Some(pos!(pos as u8 / W as u8, pos as u8 % W as u8))
+            }
+        })
+    }
+
     pub fn count_ones(&self) -> u8 {
         self.0.0.iter().map(|x| x.count_ones() as u8).sum()
     }
 
     pub fn set(&mut self, pos: Pos) {
-        let d = U256::from(pos.index());
-        self.0 |= U256::one() << d;
+        *self |= pos.mask()
     }
 
     pub fn clear(&mut self) {
@@ -1634,25 +1646,11 @@ impl Bitboard {
     }
 
     pub fn reset(&mut self, pos: Pos) {
-        let d = U256::from(pos.index());
-        self.0 &= !(U256::one() << d);
+        *self &= !pos.mask();
     }
 
     pub fn get(&self, pos: Pos) -> bool {
-        let d = U256::from(pos.index());
-        self.0 & (U256::one() << d) != U256::zero()
-    }
-
-    fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
-        self.0
-            .0
-            .iter()
-            .enumerate()
-            .flat_map(|(i, x)| {
-                (0..64)
-                    .filter(move |j| x & (1 << j) != 0)
-                    .map(move |j| Pos::from_index(i * 64 + j))
-            })
+        (*self & pos.mask()).0 != U256::zero()
     }
 
     fn pop(&mut self) -> Option<Pos> {
@@ -1684,10 +1682,10 @@ pub struct Board {
     pub leader_green: Bitboard,
     pub leader_black: Bitboard,
 
-    pub tile_red: Bitboard,
-    pub tile_blue: Bitboard,
-    pub tile_green: Bitboard,
-    pub tile_black: Bitboard,
+    pub red_tiles: Bitboard,
+    pub blue_tiles: Bitboard,
+    pub green_tiles: Bitboard,
+    pub black_tiles: Bitboard,
 }
 
 impl Default for Board {
@@ -1738,10 +1736,10 @@ impl Board {
             leader_green: Bitboard::new(),
             leader_black: Bitboard::new(),
 
-            tile_red: Bitboard::new(),
-            tile_blue: Bitboard::new(),
-            tile_green: Bitboard::new(),
-            tile_black: Bitboard::new(),
+            red_tiles: Bitboard::new(),
+            blue_tiles: Bitboard::new(),
+            green_tiles: Bitboard::new(),
+            black_tiles: Bitboard::new(),
         };
 
         for (x, row) in BOARD.iter().enumerate() {
@@ -1800,19 +1798,19 @@ impl Board {
     #[must_use]
     pub fn path_find(&self, p1_pos: Pos, p2_pos: Pos) -> bool {
         // find a path between p1_pos and p2_pos, the cells must be is_connectable()
-        let mut visited = [[false; W]; H];
-        let mut stack = vec![p1_pos];
+        let mut visited = Bitboard::new();
+        let mut stack = p1_pos.mask();
         while let Some(pos) = stack.pop() {
-            if visited[pos.x as usize][pos.y as usize] {
+            if visited.get(pos) {
                 continue;
             }
             if pos == p2_pos {
                 return true;
             }
-            visited[pos.x as usize][pos.y as usize] = true;
+            visited.set(pos);
             for neighbor in pos.neighbors().iter() {
                 if self.is_connectable(pos) {
-                    stack.push(neighbor);
+                    stack.set(neighbor);
                 }
             }
         }
@@ -1820,8 +1818,8 @@ impl Board {
         false
     }
 
-    pub fn find_empty_leader_space_next_to_red(&self) -> Vec<Pos> {
-        let mut ret = Vec::new();
+    pub fn find_empty_leader_space_next_to_red(&self) -> Bitboard {
+        let mut ret = Bitboard::new();
 
         let count = self.nearby_kingdom_count();
 
@@ -1838,7 +1836,7 @@ impl Board {
                             && !self.get_catastrophe(pos)
                             && self.get_leader(pos) == Leader::None
                         {
-                            ret.push(pos);
+                            ret.set(pos);
                         }
                     }
                 }
@@ -1852,7 +1850,6 @@ impl Board {
         // for each grid cell, count number of neighboring kingdoms
         let mut visited = Bitboard::new();
         let mut count = [[0_u8; W]; H];
-        let mut temp_visited = Bitboard::new();
 
         for x in 0..H {
             for y in 0..W {
@@ -1860,10 +1857,7 @@ impl Board {
                 if visited.get(pos) {
                     continue;
                 }
-                visited.set(pos);
-
-                temp_visited.clear();
-                let kingdom = self.find_kingdom(pos, &mut temp_visited);
+                let kingdom = self.find_kingdom(pos, &mut visited);
                 if !kingdom.has_leader() {
                     continue;
                 }
@@ -1883,8 +1877,6 @@ impl Board {
                         }
                     }
                 }
-
-                visited |= temp_visited;
             }
         }
         count
@@ -1904,7 +1896,7 @@ impl Board {
     }
 
     pub fn find_kingdom_map(&self, start: Pos, kingdom: &mut Bitboard) {
-        let mut stack = vec![start];
+        let mut stack = start.mask();
         // if it's connectable, mark as kingdom
         while let Some(pos) = stack.pop() {
             if kingdom.get(pos) {
@@ -1917,51 +1909,27 @@ impl Board {
 
             kingdom.set(pos);
 
-            for neighbor_pos in pos.neighbors().iter() {
-                stack.push(neighbor_pos);
-            }
+            stack |= pos.neighbors();
         }
     }
 
     pub fn find_kingdom(&self, pos: Pos, visited: &mut Bitboard) -> Kingdom {
         let mut kingdom = Kingdom::default();
 
-        let mut stack = Bitboard::new();
-        stack.set(pos);
-        let mut temp_visited = Bitboard::new();
+        let mut stack = pos.mask();
         let mut map = Bitboard::new();
 
         while let Some(pos) = stack.pop() {
-            if temp_visited.get(pos) {
+            if visited.get(pos) {
                 continue;
             }
-            temp_visited |= pos.mask();
+            *visited |= pos.mask();
 
             if !self.is_connectable(pos) {
                 continue;
             }
 
             map |= pos.mask();
-
-            if self.get_tile_type(pos) != TileType::Empty {
-                match self.get_tile_type(pos) {
-                    TileType::Red => kingdom.red_tiles += 1,
-                    TileType::Black => kingdom.black_tiles += 1,
-                    TileType::Green => kingdom.green_tiles += 1,
-                    TileType::Blue => kingdom.blue_tiles += 1,
-                    TileType::Empty => unreachable!(),
-                }
-            }
-
-            if self.get_leader(pos) != Leader::None {
-                match self.get_leader(pos) {
-                    Leader::Red => kingdom.red_leader = Some((self.get_player(pos), pos)),
-                    Leader::Black => kingdom.black_leader = Some((self.get_player(pos), pos)),
-                    Leader::Green => kingdom.green_leader = Some((self.get_player(pos), pos)),
-                    Leader::Blue => kingdom.blue_leader = Some((self.get_player(pos), pos)),
-                    Leader::None => unreachable!(),
-                }
-            }
 
             if self.get_treasure(pos) {
                 match &mut kingdom.treasures {
@@ -1975,9 +1943,17 @@ impl Board {
             stack |= pos.neighbors();
         }
 
-        *visited |= temp_visited;
-
         kingdom.map = map;
+
+        kingdom.red_tiles = (map & self.red_tiles).count_ones();
+        kingdom.blue_tiles = (map & self.blue_tiles).count_ones();
+        kingdom.green_tiles = (map & self.green_tiles).count_ones();
+        kingdom.black_tiles = (map & self.black_tiles).count_ones();
+
+        kingdom.red_leader = (self.leader_red & map).iter().next().map(|p| (self.get_player(p), p));
+        kingdom.blue_leader = (self.leader_blue & map).iter().next().map(|p| (self.get_player(p), p));
+        kingdom.green_leader = (self.leader_green & map).iter().next().map(|p| (self.get_player(p), p));
+        kingdom.black_leader = (self.leader_black & map).iter().next().map(|p| (self.get_player(p), p));
 
         kingdom
     }
@@ -2029,11 +2005,11 @@ impl Board {
         ret
     }
 
-    fn find_disintegrable_tiles(&self, loser_pos: Pos, tile_type: TileType) -> Vec<Pos> {
+    fn find_disintegrable_tiles(&self, loser_pos: Pos, tile_type: TileType) -> Bitboard {
         // find all the tiles that are connected to the loser of TileType
-        let mut ret = vec![];
+        let mut ret = Bitboard::new();
         let mut visited = Bitboard::new();
-        let mut stack = vec![loser_pos];
+        let mut stack = loser_pos.mask();
         while let Some(pos) = stack.pop() {
             if visited.get(pos) {
                 continue;
@@ -2056,13 +2032,11 @@ impl Board {
                 && !leader_near_red
                 && !self.get_monument(pos)
             {
-                ret.push(pos);
+                ret.set(pos);
             }
 
             if self.is_connectable(pos) {
-                for neighbor_pos in pos.neighbors().iter() {
-                    stack.push(neighbor_pos);
-                }
+                stack |= pos.neighbors()
             }
         }
 
@@ -2154,13 +2128,13 @@ impl Board {
     }
 
     pub fn get_tile_type(&self, pos: Pos) -> TileType {
-        if self.tile_red.get(pos) {
+        if self.red_tiles.get(pos) {
             TileType::Red
-        } else if self.tile_green.get(pos) {
+        } else if self.green_tiles.get(pos) {
             TileType::Green
-        } else if self.tile_blue.get(pos) {
+        } else if self.blue_tiles.get(pos) {
             TileType::Blue
-        } else if self.tile_black.get(pos) {
+        } else if self.black_tiles.get(pos) {
             TileType::Black
         } else {
             TileType::Empty
@@ -2170,15 +2144,15 @@ impl Board {
     pub fn set_tile_type(&mut self, pos: Pos, tile_type: TileType) {
         match tile_type {
             TileType::Empty => {
-                self.tile_red.reset(pos);
-                self.tile_green.reset(pos);
-                self.tile_blue.reset(pos);
-                self.tile_black.reset(pos);
+                self.red_tiles.reset(pos);
+                self.green_tiles.reset(pos);
+                self.blue_tiles.reset(pos);
+                self.black_tiles.reset(pos);
             }
-            TileType::Red => self.tile_red.set(pos),
-            TileType::Green => self.tile_green.set(pos),
-            TileType::Blue => self.tile_blue.set(pos),
-            TileType::Black => self.tile_black.set(pos),
+            TileType::Red => self.red_tiles.set(pos),
+            TileType::Green => self.green_tiles.set(pos),
+            TileType::Blue => self.blue_tiles.set(pos),
+            TileType::Black => self.black_tiles.set(pos),
         }
     }
 }

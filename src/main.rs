@@ -27,11 +27,19 @@ mod solver;
 mod visualizer;
 
 fn main() {
-    // visualizer::play(TnEGame::new());
-    // view_custom();
-    // view_history_json("out.json");
-    // test_play();
-    test_perft()
+    let arg = std::env::args().nth(1).expect("no argument");
+
+    match arg.as_str() {
+        "play" => visualizer::play(TnEGame::new()),
+        "view" => {
+            let path = std::env::args().nth(2).expect("no path");
+            view_history_json(&path);
+        }
+        "view_custom" => view_custom(),
+        "test" => test_play(),
+        "perft" => test_perft(),
+        _ => panic!("unknown argument"),
+    }
 }
 
 pub fn view_custom() {
@@ -94,5 +102,5 @@ fn test_play() {
 
 fn test_perft() {
     let mut state = TnEGame::new();
-    perft::<TigrisAndEuphrates>(&mut state, 10, true);
+    perft::<TigrisAndEuphrates>(&mut state, 3, false);
 }

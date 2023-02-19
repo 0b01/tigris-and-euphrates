@@ -125,7 +125,7 @@ impl PlayerAction {
                 // TODO: Action::ReplaceTile(_))
 
                 // move leader
-                for pos in state.board.find_empty_leader_space_next_to_red() {
+                for pos in state.board.find_empty_leader_space_next_to_red().iter() {
                     for leader in
                         [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
                     {
