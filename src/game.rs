@@ -1,5 +1,6 @@
 use std::ops::Add;
 use packed_struct::prelude::*;
+use serde::{Serialize, Deserialize};
 pub const W: usize = 16;
 pub const H: usize = 11;
 #[macro_export]
@@ -14,7 +15,7 @@ macro_rules! pos {
     };
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Players(pub [PlayerState; 2]);
 impl Players {
     pub fn get(&self, player: Player) -> &PlayerState {
@@ -33,13 +34,13 @@ impl Players {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Monument {
     pub monument_type: MonumentType,
     pub pos_top_left: Pos,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TnEGame {
     pub board: Board,
     pub players: Players,
@@ -126,7 +127,6 @@ macro_rules! p1 {
     };
 }
 
-#[allow(unused)]
 macro_rules! p2 {
     () => {
         (Player::Player2, PlayerAction::Normal)
@@ -467,21 +467,18 @@ impl TnEGame {
                         let attacker_points = c.attacker_base_strength + c.attacker_support;
                         let defender_points = c.defender_base_strength + c.defender_support;
 
-                        let (winner, loser, loser_pos) = if attacker_points > defender_points {
+                        let (winner, _loser, loser_pos) = if attacker_points > defender_points {
                             (attacker, defender, c.defender_pos)
                         } else {
                             (defender, attacker, c.attacker_pos)
                         };
 
-                        // remove loser
-                        self.players.get_mut(loser).set_leader(c.leader, None);
-                        let loser_cell = self.board.get_mut(loser_pos);
-                        loser_cell.leader = Leader::None;
-                        loser_cell.player = Player::None;
                         // give winner 1 point
                         self.players
                             .get_mut(winner)
                             .add_score(c.leader.as_tile_type());
+
+                        self.evict_leader(loser_pos);
                     } else {
                         // external conflict
                         let attacker_points = c.attacker_base_strength + c.attacker_support;
@@ -602,6 +599,11 @@ impl TnEGame {
                 cell.tile_type = TileType::Empty;
 
                 curr_player.num_catastrophes -= 1;
+
+                for neighbor in to.neighbors() {
+                    self.evict_leader(neighbor);
+                }
+
                 Some(GameState::Normal)
             }
             Action::PlaceTile { to, tile_type } => {
@@ -741,12 +743,7 @@ impl TnEGame {
                     Some(next_state)
                 }
                 Movement::Withdraw(pos) => {
-                    let cell = &mut self.board.0[pos.x as usize][pos.y as usize];
-                    self.players
-                        .get_mut(current_player)
-                        .set_leader(cell.leader, None);
-                    cell.leader = Leader::None;
-                    cell.player = Player::None;
+                    self.evict_leader(pos);
                     Some(GameState::Normal)
                 }
             },
@@ -1086,9 +1083,18 @@ impl TnEGame {
     pub fn next_state(&self) -> GameState {
         self.state.last().copied().unwrap()
     }
+
+    fn evict_leader(&mut self, pos: Pos) {
+        let cell = self.board.get_mut(pos);
+        if cell.leader != Leader::None {
+            self.players.get_mut(cell.player).set_leader(cell.leader, None);
+            cell.leader = Leader::None;
+            cell.player = Player::None;
+        }
+    }
 }
 
-#[derive(Copy, PartialEq, Eq, Debug, Clone)]
+#[derive(Copy, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub enum GameState {
     Normal,
     TakeTreasure,
@@ -1097,7 +1103,7 @@ pub enum GameState {
     BuildMonument,
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub enum PlayerAction {
     AddSupport(TileType),
     SelectLeader {
@@ -1111,7 +1117,7 @@ pub enum PlayerAction {
     BuildMonument(Pos, Vec<MonumentType>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalConflict {
     pub conflicts: Vec<Conflict>,
     pub unification_tile_pos: Pos,
@@ -1119,7 +1125,7 @@ pub struct ExternalConflict {
 }
 
 /// occurs when placing same leaders in same kingdom
-#[derive(Debug, Clone, Copy, Eq)]
+#[derive(Debug, Clone, Copy, Eq, Serialize, Deserialize)]
 pub struct Conflict {
     is_internal: bool,
     leader: Leader,
@@ -1185,7 +1191,7 @@ pub enum Action {
     Pass,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tiles {
     red: u8,
     black: u8,
@@ -1273,7 +1279,7 @@ pub enum Movement {
     Withdraw(Pos),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pos {
     pub x: u8,
     pub y: u8,
@@ -1359,7 +1365,7 @@ impl Pos {
 }
 
 #[repr(packed)]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlayerState {
     pub placed_red_leader: Option<Pos>,
     pub placed_black_leader: Option<Pos>,
@@ -1550,7 +1556,7 @@ impl PlayerState {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Board(pub [[Cell; W]; H]);
 
 impl Default for Board {
@@ -1889,7 +1895,7 @@ impl Board {
     }
 }
 
-#[derive(PackedStruct, Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(PackedStruct, Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[packed_struct(bit_numbering = "msb0")]
 pub struct Cell {
     #[packed_field(bits = "0..=2", ty = "enum")]
@@ -1924,7 +1930,7 @@ impl Cell {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MonumentType {
     RedGreen,
     RedBlue,
@@ -1967,7 +1973,7 @@ impl MonumentType {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TileType {
     Empty,
     Blue,
@@ -1987,14 +1993,14 @@ impl TileType {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Player {
     None,
     Player1,
     Player2,
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Leader {
     None,
     Blue,
@@ -2015,7 +2021,7 @@ impl Leader {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Terrain {
     Empty,
     River,

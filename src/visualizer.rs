@@ -2,7 +2,7 @@ use macroquad::{miniquad::conf::Icon, prelude::*};
 use minimax::{Negamax, Strategy};
 
 use crate::game::{
-    Action, Cell, Leader, Monument, MonumentType, Movement, Player, PlayerAction, Pos, Terrain,
+    Action, Cell, Leader, MonumentType, Movement, Player, PlayerAction, Pos, Terrain,
     TileType, TnEGame, H, W,
 };
 use crate::{pos, solver::Evaluator};
@@ -73,6 +73,7 @@ pub struct Textures {
     t_green: Texture2D,
     circle: Texture2D,
     warning: Texture2D,
+    catastrophe: Texture2D,
 
     monument_red_blue: Texture2D,
     monument_red_green: Texture2D,
@@ -130,6 +131,7 @@ impl Textures {
         let t_green = sub_img!(14.);
         let circle = sub_img!(15.);
         let warning = sub_img!(16.);
+        let catastrophe = sub_img!(17.);
 
         let monuments = load_texture("assets/monuments.png")
             .await
@@ -167,6 +169,7 @@ impl Textures {
             t_green,
             circle,
             warning,
+            catastrophe,
         }
     }
 
@@ -258,6 +261,8 @@ impl Textures {
             return;
         } else if cell.terrain == Terrain::Monument {
             None
+        } else if cell.terrain == Terrain::Catastrophe {
+            Some(self.catastrophe)
         } else if cell.has_treasure {
             Some(self.t_red_treasure)
         } else if cell.tile_type == TileType::Red {
@@ -287,77 +292,59 @@ impl Textures {
     }
 }
 
-struct Tile {
-    logical_pos: Vec2,
-    holding_type: Result<TileType, Leader>,
-}
-
 struct GameUIState {
-    tiles: Vec<Tile>,
-    selected: Option<usize>,
+    textures: Textures,
+    selected: Option<Result<TileType, Leader>>,
+    map: Texture2D,
 }
 
 impl GameUIState {
-    fn new(game: &TnEGame) -> Self {
-        let mut s = Self {
+    async fn new() -> Self {
+        let textures = Textures::new().await;
+        let map = load_texture("assets/map.png").await.unwrap();
+        map.set_filter(FilterMode::Nearest);
+        Self {
+            textures,
+            map,
             selected: None,
-            tiles: vec![],
-        };
-        s.update_hand(game);
-        s
-    }
-
-    fn draw(&self, textures: &Textures) {
-        for tile in &self.tiles {
-            match tile.holding_type {
-                Ok(t) => textures.draw_tile_logical(t, tile.logical_pos),
-                Err(l) => textures.draw_leader_logical(l, tile.logical_pos),
-            }
         }
     }
 
-    fn update_hand(&mut self, game: &TnEGame) {
+
+    fn get_hand(&self, game: &TnEGame) -> Vec<(Result<TileType, Leader>, Vec2)> {
+        let mut ret = vec![];
         let player = &game.players.0[0];
         let hand = player.hand_to_vec();
-        let mut hand: Vec<_> = hand.into_iter().map(Result::Ok).collect();
-
+        let mut i = 0;
+        for t in hand.iter() {
+            let pos = vec2(HAND_X, HAND_Y + i as f32 * 12. + 2. * i as f32);
+            ret.push((Ok(*t), pos));
+            i += 1;
+        }
         for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].iter() {
             if player.get_leader(*leader).is_none() {
-                hand.push(Err(*leader));
+                let pos = vec2(HAND_X, HAND_Y + i as f32 * 12. + 2. * i as f32);
+                ret.push((Err(*leader), pos));
+                i += 1;
             }
         }
 
-        self.tiles = hand
-            .iter()
-            .enumerate()
-            .map(|(i, t)| Tile {
-                logical_pos: vec2(HAND_X, HAND_Y + i as f32 * 12. + 2. * i as f32),
-                holding_type: *t,
-            })
-            .collect();
+        ret
     }
-}
 
-async fn run(mut game: TnEGame, draw_only: Option<&str>) {
-    // // example monument:
-    // game.board.0[0][0].terrain = Terrain::MonumentTopLeft;
-    // game.monuments.push(Monument { monument_type: crate::game::MonumentType::BlackRed, monument_top_left: pos!(0,0) });
+    fn draw_hand(&self, game: &TnEGame) {
+        for (ty, pos) in self.get_hand(game) {
+            match ty {
+                Result::Ok(t) => self.textures.draw_tile_logical(t, pos),
+                Result::Err(l) => self.textures.draw_leader_logical(l, pos),
+            }
+        }
+    }
 
-    let map = load_texture("assets/map.png").await.unwrap();
-    map.set_filter(FilterMode::Nearest);
-    let textures = Textures::new().await;
-    let mut ui_state = GameUIState::new(&game);
-    let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
-    // let mut strategy = Random::<TigrisAndEuphrates>::default();
-
-    loop {
-        ui_state.update_hand(&game);
-        let mouse_logical = mouse_position_logical();
-        clear_background(LIGHTGRAY);
-
+    fn draw_map(&self) {
         // draw the map
         draw_texture_ex(
-            map,
+            self.map,
             0.,
             0.,
             WHITE,
@@ -366,11 +353,15 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                 ..Default::default()
             },
         );
+    }
+
+    fn draw(&self, game: &TnEGame) {
+        self.draw_map();
 
         // draw internal conflict, behind tiles
         if let Some(conflict) = game.internal_conflict.as_ref() {
-            textures.draw_texture_at_grid(textures.warning, conflict.attacker_pos);
-            textures.draw_texture_at_grid(textures.warning, conflict.defender_pos);
+            self.textures.draw_texture_at_grid(self.textures.warning, conflict.attacker_pos);
+            self.textures.draw_texture_at_grid(self.textures.warning, conflict.defender_pos);
         }
 
         // draw unification tile
@@ -379,7 +370,7 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             .as_ref()
             .map(|i| i.unification_tile_pos)
         {
-            textures.draw_texture_at_grid(textures.unification, unification_tile_pos);
+            self.textures.draw_texture_at_grid(self.textures.unification, unification_tile_pos);
         }
 
         // draw external conflict, a black circle surrounding leaders
@@ -402,8 +393,78 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                     continue;
                 }
 
-                if let Some(pos) = game.players.get_mut(Player::Player1).get_leader(leader) {
-                    textures.draw_texture_at_grid(textures.circle, pos);
+                if let Some(pos) = game.players.get(Player::Player1).get_leader(leader) {
+                    self.textures.draw_texture_at_grid(self.textures.circle, pos);
+                }
+            }
+        }
+
+        // draw the tiles
+        for (i, row) in game.board.0.iter().enumerate() {
+            for (j, cell) in row.iter().enumerate() {
+                self.textures.draw(&game, cell, pos!(i as u8, j as u8));
+            }
+        }
+
+        // if we can take treasure, draw treasure tiles
+        if let PlayerAction::TakeTreasure(ts) = game.next_action() {
+            for t in ts {
+                self.textures.draw_texture_at_grid(self.textures.treasure_blue, t);
+            }
+        }
+
+        self.draw_hand(game);
+    }
+}
+
+async fn run_history(history: Vec<TnEGame>) {
+    let ui = GameUIState::new().await;
+    let mut i = 0;
+    loop {
+        let game = &history[i];
+        if is_key_pressed(KeyCode::Right) {
+            i = (i + 1).min(history.len() - 1);
+        } else if is_key_pressed(KeyCode::Left) {
+            i = i.saturating_sub(1);
+        }
+
+        ui.draw(game);
+
+        next_frame().await;
+    }
+}
+
+async fn run(mut game: TnEGame) {
+    let mut ui = GameUIState::new().await;
+    let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
+    // let mut strategy = Random::<TigrisAndEuphrates>::default();
+
+    loop {
+        let mouse_logical = mouse_position_logical();
+        clear_background(LIGHTGRAY);
+
+        ui.draw(&game);
+
+        if let PlayerAction::SelectLeader {
+            red,
+            blue,
+            green,
+            black,
+        } = game.next_action()
+        {
+            for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
+                let in_conflict = match leader {
+                    Leader::Red => red,
+                    Leader::Blue => blue,
+                    Leader::Green => green,
+                    Leader::Black => black,
+                    _ => unreachable!(),
+                };
+                if !in_conflict {
+                    continue;
+                }
+
+                if let Some(pos) = game.players.get(Player::Player1).get_leader(leader) {
                     if is_mouse_button_pressed(MouseButton::Left)
                         && in_tile(mouse_logical, grid_to_logical(pos))
                     {
@@ -413,23 +474,13 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             }
         }
 
-        // draw the tiles
-        for (i, row) in game.board.0.iter().enumerate() {
-            for (j, cell) in row.iter().enumerate() {
-                textures.draw(&game, cell, pos!(i as u8, j as u8));
-            }
-        }
-
-        // if we can take treasure, draw treasure tiles
+        // if we can take treasure
         if let PlayerAction::TakeTreasure(ts) = game.next_action() {
             for t in ts {
-                textures.draw_texture_at_grid(textures.treasure_blue, t);
-
                 // if clicked on those tiles, take the treasure
                 if logical_to_grid(mouse_logical) == t && is_mouse_button_pressed(MouseButton::Left)
                 {
                     process(&mut game, Action::TakeTreasure(t));
-                    ui_state.update_hand(&game);
                 }
             }
         }
@@ -462,14 +513,10 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
             }
         }
 
-        // draw tile if we are dragging
-        ui_state.draw(&textures);
-
         // if clicked on hand or grid
         if is_mouse_button_pressed(MouseButton::Left) {
             // if we are holding a tile
-            if let Some(i) = ui_state.selected {
-                let holding_type = ui_state.tiles[i].holding_type;
+            if let Some(holding_type) = ui.selected {
                 if in_grid(mouse_logical) {
                     let pos = logical_to_grid(mouse_logical);
 
@@ -486,26 +533,19 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
                     }
                 }
 
-                ui_state.selected = None;
+                ui.selected = None;
             }
 
-            for (
-                i,
-                Tile {
-                    logical_pos: pos, ..
-                },
-            ) in ui_state.tiles.iter_mut().enumerate()
-            {
-                if in_tile(mouse_logical, *pos) {
-                    ui_state.selected = Some(i);
+            for (i, pos) in ui.get_hand(&game) {
+                if in_tile(mouse_logical, pos) {
+                    ui.selected = Some(i);
                     break;
                 }
             }
         }
 
         // if we are holding a tile
-        if let Some(i) = ui_state.selected {
-            let holding_type = ui_state.tiles[i].holding_type;
+        if let Some(holding_type) = ui.selected {
 
             // if clicked in the grid
             let pos = if in_grid(mouse_logical) {
@@ -537,19 +577,14 @@ async fn run(mut game: TnEGame, draw_only: Option<&str>) {
 
             if let Some(pos) = pos {
                 match holding_type {
-                    Ok(t) => textures.draw_tile_logical(t, pos),
-                    Err(l) => textures.draw_leader_logical(l, pos),
+                    Ok(t) => ui.textures.draw_tile_logical(t, pos),
+                    Err(l) => ui.textures.draw_leader_logical(l, pos),
                 }
             }
         }
 
         // finish drawing
         next_frame().await;
-
-        if let Some(path) = draw_only {
-            screenshot(path);
-            break;
-        }
 
         if is_key_pressed(KeyCode::S) {
             screenshot("screenshot.png");
@@ -611,7 +646,21 @@ fn in_grid(Vec2 { x, y }: Vec2) -> bool {
         && y < LOGICAL_GRID_START_Y + 12. * H as f32 + H as f32
 }
 
-pub fn start(game: TnEGame) {
+pub fn history_viewer(games: Vec<TnEGame>) {
+    macroquad::Window::from_config(
+        Conf {
+            window_title: "Tigris and Euphrates".to_string(),
+            window_width: 240 * 5,
+            window_height: 160 * 5,
+            high_dpi: false,
+            window_resizable: false,
+            ..Default::default()
+        },
+        run_history(games),
+    );
+}
+
+pub fn play(game: TnEGame) {
     let small = Image::from_file_with_format(include_bytes!("../assets/icon_small.png"), None)
         .bytes
         .leak()
@@ -639,7 +688,7 @@ pub fn start(game: TnEGame) {
             icon: Some(icon),
             ..Default::default()
         },
-        run(game, None),
+        run(game),
     );
 }
 

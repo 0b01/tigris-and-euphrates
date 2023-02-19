@@ -1,7 +1,5 @@
+use crate::game::{Action, Leader, Movement, Player, PlayerAction, TnEGame, H, W};
 use minimax::Zobrist;
-
-use crate::game::{Action, GameState, Leader, Movement, Player, PlayerAction, TnEGame, H, W};
-
 pub struct TigrisAndEuphrates;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -123,27 +121,18 @@ impl PlayerAction {
 
                 // move leader
                 for pos in state.board.find_empty_leader_space_next_to_red() {
-                    let mut visited = [[false; W]; H];
-                    let kingdom = state.board.find_kingdom(pos, &mut visited);
                     for leader in
                         [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
                     {
                         if let Some(from) = state.players.get(current_player).get_leader(leader)
                         {
-                            // only move when the position is in enemy's kingdom
-                            if let Some(possible_enemy) =
-                                kingdom.get_leader_info(leader).map(|l| l.0)
-                            {
-                                if possible_enemy != current_player {
-                                    moves.push(TnEMove::new(
-                                        state.clone(),
-                                        Action::MoveLeader {
-                                            movement: Movement::Move { from, to: pos },
-                                            leader,
-                                        },
-                                    ));
-                                }
-                            }
+                            moves.push(TnEMove::new(
+                                state.clone(),
+                                Action::MoveLeader {
+                                    movement: Movement::Move { from, to: pos },
+                                    leader,
+                                },
+                            ));
                         } else {
                             moves.push(TnEMove::new(
                                 state.clone(),
@@ -166,10 +155,11 @@ impl PlayerAction {
                     }
                 }
 
-                moves.push(TnEMove {
-                    old_state: state.clone(),
-                    move_: Action::Pass,
-                });
+                // // pass
+                // moves.push(TnEMove {
+                //     old_state: state.clone(),
+                //     move_: Action::Pass,
+                // });
             }
             PlayerAction::SelectLeader {
                 red,
@@ -241,12 +231,10 @@ impl minimax::Evaluator for Evaluator {
     type G = TigrisAndEuphrates;
 
     fn evaluate(&self, state: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
-        
-
         let s1 = state.players.get(Player::Player1).get_eval(state);
         let s2 = state.players.get(Player::Player2).get_eval(state);
 
-        if state.last_action_player == Player::Player2 {
+        if state.last_action_player == Player::Player1 {
             s2 - s1
         } else {
             s1 - s2
