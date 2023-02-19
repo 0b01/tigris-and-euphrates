@@ -1,4 +1,4 @@
-use crate::game::{Action, Leader, Movement, Player, PlayerAction, TnEGame};
+use crate::{game::{Action, Leader, Movement, Player, PlayerAction, TnEGame}, visualizer};
 use minimax::Zobrist;
 pub struct TigrisAndEuphrates;
 
@@ -30,8 +30,13 @@ impl minimax::Move for TnEMove {
         match state.process(self.move_) {
             Ok(_) => {}
             Err(e) => {
-                dbg!(state);
+                dbg!(&state);
                 dbg!(self.move_);
+
+                let c = state.internal_conflict.unwrap();
+                let ret = state.check_internal_conflict(c.attacker_pos, c.conflict_leader, state.next_player());
+                dbg!(ret);
+                visualizer::play(state.clone());
                 panic!("{:#?}", e);
             }
         }

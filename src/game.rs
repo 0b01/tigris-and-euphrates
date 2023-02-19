@@ -1,4 +1,3 @@
-use std::ops::Add;
 
 use packed_struct::prelude::*;
 use primitive_types::U256;
@@ -38,6 +37,19 @@ static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
         }
     }
     mask
+});
+
+static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
+    let mut ret = [[Bitboard::new(); W]; H];
+    for x in 0..H {
+        for y in 0..W {
+            let pos = pos!(x as u8, y as u8);
+            let mut bitboard = Bitboard::new();
+            bitboard.set(pos);
+            ret[x][y] = bitboard;
+        }
+    }
+    ret
 });
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -99,7 +111,7 @@ pub struct TnEGame {
 impl std::fmt::Debug for TnEGame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TnE")
-            // .field("board", &self.board)
+            .field("board", &self.board)
             .field("players", &self.players)
             .field("bag", &self.bag)
             .field("state", &self.state)
@@ -112,7 +124,9 @@ impl std::fmt::Debug for TnEGame {
     }
 }
 
+#[derive(Default)]
 pub struct Kingdom {
+    pub map: Bitboard,
     pub red_leader: Option<(Player, Pos)>,
     pub black_leader: Option<(Player, Pos)>,
     pub green_leader: Option<(Player, Pos)>,
@@ -773,7 +787,7 @@ impl TnEGame {
         }
     }
 
-    fn check_internal_conflict(
+    pub(crate) fn check_internal_conflict(
         &mut self,
         pos: Pos,
         leader: Leader,
@@ -1125,7 +1139,7 @@ pub struct ExternalConflict {
 #[derive(Debug, Clone, Copy, Eq, Serialize, Deserialize)]
 pub struct Conflict {
     is_internal: bool,
-    conflict_leader: Leader,
+    pub conflict_leader: Leader,
 
     attacker: Player,
     pub attacker_pos: Pos,
@@ -1292,7 +1306,7 @@ pub struct Pos {
     pub y: u8,
 }
 
-impl Add for Pos {
+impl std::ops::Add for Pos {
     type Output = Pos;
 
     fn add(self, other: Pos) -> Pos {
@@ -1366,6 +1380,10 @@ impl Pos {
             x: (index / W) as u8,
             y: (index % W) as u8,
         }
+    }
+
+    fn mask(&self) -> Bitboard {
+        POS_TO_BITBOARD[self.x as usize][self.y as usize]
     }
 }
 
@@ -1562,8 +1580,36 @@ impl PlayerState {
 }
 
 /// Bitboard for fast operations on the board 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, derive_more::Not, derive_more::BitXor, derive_more::BitAnd, derive_more::BitOr, Serialize, Deserialize)]
+#[derive(Default, Copy, Clone, Eq, PartialEq, Serialize, Deserialize,
+    derive_more::Not,
+    derive_more::BitXor, derive_more::BitAnd, derive_more::BitOr,
+    derive_more::BitOrAssign, derive_more::BitAndAssign, derive_more::BitXorAssign
+)]
 pub struct Bitboard(pub U256);
+
+impl std::fmt::Display for Bitboard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::new();
+        s.push('\n');
+        for x in 0..H {
+            for y in 0..W {
+                if self.get(pos!(x as u8, y as u8)) {
+                    s.push('⬛');
+                } else {
+                    s.push('🟨');
+                }
+            }
+            s.push('\n');
+        }
+        write!(f, "{}", s)
+    }
+}
+
+impl std::fmt::Debug for Bitboard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
 
 impl Bitboard {
     pub fn new() -> Self {
@@ -1752,7 +1798,7 @@ impl Board {
     }
 
     #[must_use]
-    fn path_find(&self, p1_pos: Pos, p2_pos: Pos) -> bool {
+    pub fn path_find(&self, p1_pos: Pos, p2_pos: Pos) -> bool {
         // find a path between p1_pos and p2_pos, the cells must be is_connectable()
         let mut visited = [[false; W]; H];
         let mut stack = vec![p1_pos];
@@ -1802,7 +1848,7 @@ impl Board {
         ret
     }
 
-    fn nearby_kingdom_count(&self) -> [[u8; 16]; 11] {
+    pub fn nearby_kingdom_count(&self) -> [[u8; 16]; 11] {
         // for each grid cell, count number of neighboring kingdoms
         let mut visited = Bitboard::new();
         let mut count = [[0_u8; W]; H];
@@ -1817,13 +1863,18 @@ impl Board {
                 visited.set(pos);
 
                 temp_visited.clear();
-                let kingdom = self.find_kingdom(pos!(x as u8, y as u8), &mut temp_visited);
+                let kingdom = self.find_kingdom(pos, &mut temp_visited);
                 if !kingdom.has_leader() {
                     continue;
                 }
 
                 // find surrounding empty cells
-                let nearby_empty_cells = !temp_visited & pos.neighbors();
+                let neighbor_mask = kingdom.map
+                    .iter()
+                    .map(|p| p.neighbors())
+                    .reduce(|a, b| a | b)
+                    .unwrap_or_default();
+                let nearby_empty_cells = !kingdom.map & neighbor_mask;
 
                 for (rr, row) in count.iter_mut().enumerate() {
                     for (cc, c) in row.iter_mut().enumerate() {
@@ -1833,7 +1884,7 @@ impl Board {
                     }
                 }
 
-                visited = visited | temp_visited;
+                visited |= temp_visited;
             }
         }
         count
@@ -1852,32 +1903,45 @@ impl Board {
         ret
     }
 
+    pub fn find_kingdom_map(&self, start: Pos, kingdom: &mut Bitboard) {
+        let mut stack = vec![start];
+        // if it's connectable, mark as kingdom
+        while let Some(pos) = stack.pop() {
+            if kingdom.get(pos) {
+                continue;
+            }
+
+            if !self.is_connectable(pos) {
+                continue;
+            }
+
+            kingdom.set(pos);
+
+            for neighbor_pos in pos.neighbors().iter() {
+                stack.push(neighbor_pos);
+            }
+        }
+    }
+
     pub fn find_kingdom(&self, pos: Pos, visited: &mut Bitboard) -> Kingdom {
-        let mut kingdom = Kingdom {
-            red_leader: None,
-            black_leader: None,
-            green_leader: None,
-            blue_leader: None,
-            red_tiles: 0,
-            black_tiles: 0,
-            green_tiles: 0,
-            blue_tiles: 0,
-            treasures: [None; 2],
-        };
+        let mut kingdom = Kingdom::default();
 
         let mut stack = Bitboard::new();
         stack.set(pos);
         let mut temp_visited = Bitboard::new();
+        let mut map = Bitboard::new();
 
         while let Some(pos) = stack.pop() {
             if temp_visited.get(pos) {
                 continue;
             }
-            temp_visited.set(pos);
+            temp_visited |= pos.mask();
 
             if !self.is_connectable(pos) {
                 continue;
             }
+
+            map |= pos.mask();
 
             if self.get_tile_type(pos) != TileType::Empty {
                 match self.get_tile_type(pos) {
@@ -1908,10 +1972,12 @@ impl Board {
                 }
             }
 
-            stack = stack | pos.neighbors();
+            stack |= pos.neighbors();
         }
 
-        *visited = *visited | temp_visited;
+        *visited |= temp_visited;
+
+        kingdom.map = map;
 
         kingdom
     }
@@ -1941,14 +2007,14 @@ impl Board {
 
     pub fn find_empty_spaces_adj_kingdom(&self, pos: Pos, is_river_space: bool) -> Vec<Pos> {
         let mut ret = Vec::new();
-        let mut kingdom = [[false; W]; H];
+        let mut kingdom_map = Bitboard::new();
 
-        self.find_kingdom_map(pos, &mut kingdom);
+        self.find_kingdom_map(pos, &mut kingdom_map);
 
         // find empty spaces around kingdom
         for x in 0..H {
             for y in 0..W {
-                if kingdom[x][y] {
+                if kingdom_map.get(pos!(x as u8, y as u8)) {
                     for neighbor in pos!(x as u8, y as u8).neighbors().iter() {
                         if self.get_tile_type(neighbor) == TileType::Empty && self.get_leader(neighbor) == Leader::None {
                             if is_river_space == RIVER.get(neighbor) {
@@ -1961,26 +2027,6 @@ impl Board {
         }
 
         ret
-    }
-
-    pub fn find_kingdom_map(&self, start: Pos, kingdom: &mut [[bool; 16]; 11]) {
-        let mut stack = vec![start];
-        // if it's connectable, mark as kingdom
-        while let Some(pos) = stack.pop() {
-            if kingdom[pos.x as usize][pos.y as usize] {
-                continue;
-            }
-
-            if !self.is_connectable(pos) {
-                continue;
-            }
-
-            kingdom[pos.x as usize][pos.y as usize] = true;
-
-            for neighbor_pos in pos.neighbors().iter() {
-                stack.push(neighbor_pos);
-            }
-        }
     }
 
     fn find_disintegrable_tiles(&self, loser_pos: Pos, tile_type: TileType) -> Vec<Pos> {
@@ -2952,5 +2998,43 @@ mod tests {
         assert!(pos.neighbors() == n);
 
         assert!(pos.neighbors().iter().count() == 4);
+        assert!(pos!(0,3).neighbors().iter().count() == 3);
+    }
+
+    #[test]
+    fn test_bug_leaders_disconnected() {
+        let mut game = TnEGame::new();
+
+        game.process(Action::MoveLeader {
+            movement: Movement::Place(pos!(1, 0)),
+            leader: Leader::Red,
+        }).unwrap();
+        game.process(Action::PlaceTile { to: pos!(0, 3), tile_type: TileType::Red }).unwrap();
+
+        game.process(Action::MoveLeader { movement: Movement::Place(pos!(1, 3)), leader: Leader::Red }).unwrap();
+        let count = game.board.nearby_kingdom_count();
+        assert_eq!(count[1][2], 2);
+    }
+
+    #[test]
+    fn test_find_kingdom() {
+        let mut game = TnEGame::new();
+        game.process(Action::MoveLeader {
+            movement: Movement::Place(pos!(1, 0)),
+            leader: Leader::Red,
+        }).unwrap();
+
+        let mut visited = Bitboard::new();
+        let k = game.board.find_kingdom(pos!(1,0), &mut visited);
+        assert!(k.map.get(pos!(1,0)));
+        assert!(k.map.get(pos!(1,1)));
+        assert_eq!(k.map.count_ones(), 2);
+    }
+
+    #[test]
+    fn test_bitboard() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(0, 0));
+        assert!(bb.get(pos!(0, 0)));
     }
 }

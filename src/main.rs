@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use game::pos;
+use game::Pos;
 use game::Action;
 use game::Leader;
 use game::Movement;
@@ -28,35 +28,28 @@ mod visualizer;
 
 fn main() {
     // visualizer::play(TnEGame::new());
-    // test_history();
+    // view_custom();
+    // view_history_json("out.json");
     // test_play();
     test_perft()
 }
 
-pub fn test_history() {
-    let mut buf = HistoryBuffer::new();
-    buf.push(TnEGame::new());
-    buf.process(Action::MoveLeader {
-        movement: Movement::Place(pos!("1B")),
-        leader: Leader::Red,
-    })
-    .unwrap();
-    buf.process(Action::PlaceTile {
-        to: pos!("1D"),
+pub fn view_custom() {
+    let mut game = HistoryBuffer::new();
+    game.process(Action::PlaceTile {
+        to: pos!(0, 0),
         tile_type: TileType::Red,
-    })
-    .unwrap();
-    buf.process(Action::MoveLeader {
-        movement: Movement::Place(pos!("2D")),
-        leader: Leader::Red,
-    })
-    .unwrap();
+    }).unwrap();
+    visualizer::history_viewer(game.history);
+}
 
+pub fn view_history_json(path: &str) {
+    let buf = HistoryBuffer::load(path).unwrap();
     visualizer::history_viewer(buf.history);
 }
 
 fn test_play() {
-    let mut state = TnEGame::new();
+    let mut history = HistoryBuffer::new();
 
     // // some preset scenarios for debugging:
     // let mut p1_strat = Negamax::new(Evaluator::default(), 2);
@@ -68,18 +61,21 @@ fn test_play() {
     // let mut p1_strat = Random::<TigrisAndEuphrates>::new();
     // let mut p2_strat = Random::<TigrisAndEuphrates>::new();
 
-    // let mut p2_strat = Random::new();
-    while TigrisAndEuphrates::get_winner(&state).is_none() {
-        let curr_player = state.next_player();
+    while TigrisAndEuphrates::get_winner(history.last_mut()).is_none() {
+        let curr_player = history.last_mut().next_player();
         let strategy = match curr_player {
             Player::Player1 => &mut p1_strat as &mut dyn Strategy<TigrisAndEuphrates>,
             Player::Player2 => &mut p2_strat as &mut dyn Strategy<TigrisAndEuphrates>,
             _ => unreachable!(),
         };
-        match strategy.choose_move(&mut state) {
+        match strategy.choose_move(&mut history.last_mut()) {
             Some(m) => {
                 println!("{:?}: {:?}", curr_player, &m.move_);
-                m.apply(&mut state);
+                let ret = history.process(m.move_);
+                if ret.is_err() {
+                    history.save("out.json").unwrap();
+                    ret.unwrap();
+                }
             }
             None => {
                 println!("move generator didn't generate any moves");
@@ -89,11 +85,11 @@ fn test_play() {
         // print!("[sum {}:{}], ", state.players.0[0].score_sum(), state.players.0[1].score_sum());
         println!(
             "[score {}:{}]",
-            state.players.0[0].calculate_score(),
-            state.players.0[1].calculate_score()
+            history.last_mut().players.0[0].calculate_score(),
+            history.last_mut().players.0[1].calculate_score()
         );
     }
-    dbg!(state);
+    // dbg!(history);
 }
 
 fn test_perft() {

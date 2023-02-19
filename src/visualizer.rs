@@ -314,7 +314,7 @@ impl GameUIState {
 
     fn get_hand(&self, game: &TnEGame) -> Vec<(Result<TileType, Leader>, Vec2)> {
         let mut ret = vec![];
-        let player = &game.players.0[0];
+        let player = game.players.get(game.next_player());
         let hand = player.hand_to_vec();
         let mut i = 0;
         for t in hand.iter() {
@@ -397,7 +397,7 @@ impl GameUIState {
                     continue;
                 }
 
-                if let Some(pos) = game.players.get(Player::Player1).get_leader(leader) {
+                if let Some(pos) = game.players.get(game.next_player()).get_leader(leader) {
                     self.textures
                         .draw_texture_at_grid(self.textures.circle, pos);
                 }
@@ -426,7 +426,7 @@ impl GameUIState {
 
 async fn run_history(history: Vec<TnEGame>) {
     let ui = GameUIState::new().await;
-    let mut i = 0;
+    let mut i = history.len() - 1;
     loop {
         let game = &history[i];
         if is_key_pressed(KeyCode::Right) {
@@ -441,7 +441,7 @@ async fn run_history(history: Vec<TnEGame>) {
     }
 }
 
-async fn run(mut game: TnEGame) {
+async fn run(mut game: TnEGame, self_play: bool) {
     let mut ui = GameUIState::new().await;
     // let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
     let mut ai_strategy = Random::<TigrisAndEuphrates>::default();
@@ -471,7 +471,7 @@ async fn run(mut game: TnEGame) {
                     continue;
                 }
 
-                if let Some(pos) = game.players.get(Player::Player1).get_leader(leader) {
+                if let Some(pos) = game.players.get(game.next_player()).get_leader(leader) {
                     if is_mouse_button_pressed(MouseButton::Left)
                         && in_tile(mouse_logical, grid_to_logical(pos))
                     {
@@ -597,7 +597,7 @@ async fn run(mut game: TnEGame) {
         }
 
         // if the next player is the AI, let it play, could take a while
-        if game.next_player() == Player::Player2 {
+        if game.next_player() == Player::Player2 && !self_play {
             let m = ai_strategy.choose_move(&mut game);
             if m.is_none() {
                 // take a screenshot
@@ -694,7 +694,7 @@ pub fn play(game: TnEGame) {
             icon: Some(icon),
             ..Default::default()
         },
-        run(game),
+        run(game, true),
     );
 }
 
