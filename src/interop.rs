@@ -218,6 +218,7 @@ impl TnEGame {
     }
 
     #[pyo3(name="process")]
+    /// Process an action, the args are multiuse and depend on the action
     fn process_action_vec(&mut self,
         action: u8,
 

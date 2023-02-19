@@ -1,0 +1,13 @@
+chex
+click
+fire
+jax
+jaxlib 
+mctx
+opax
+optax
+pax3
+tqdm
+# tensorflow-cpu
+# pygraphviz
+# flask
