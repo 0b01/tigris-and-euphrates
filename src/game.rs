@@ -1,6 +1,6 @@
-use std::ops::Add;
 use packed_struct::prelude::*;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::ops::Add;
 pub const W: usize = 16;
 pub const H: usize = 11;
 #[macro_export]
@@ -118,24 +118,6 @@ impl Kingdom {
     }
 }
 
-macro_rules! p1 {
-    () => {
-        (Player::Player1, PlayerAction::Normal)
-    };
-    ($i:expr) => {
-        (Player::Player1, $i)
-    };
-}
-
-macro_rules! p2 {
-    () => {
-        (Player::Player2, PlayerAction::Normal)
-    };
-    ($i:expr) => {
-        (Player::Player2, $i)
-    };
-}
-
 impl Default for TnEGame {
     fn default() -> Self {
         Self::new()
@@ -163,7 +145,10 @@ impl TnEGame {
                 green: 30,
                 blue: 36,
             },
-            play_action_stack: vec![p1!(), p1!()],
+            play_action_stack: vec![
+                (Player::Player1, PlayerAction::Normal),
+                (Player::Player1, PlayerAction::Normal),
+            ],
             player_turn: Player::Player1,
             internal_conflict: None,
             external_conflict: None,
@@ -229,7 +214,10 @@ impl TnEGame {
 
                 // the conflict must still be in progress
                 // leaders must still be connected
-                if !self.board.path_find(conflict.attacker_pos, conflict.defender_pos) {
+                if !self
+                    .board
+                    .path_find(conflict.attacker_pos, conflict.defender_pos)
+                {
                     return Err(Error::LeadersDisconnected);
                 }
 
@@ -255,7 +243,10 @@ impl TnEGame {
                 };
 
                 // leaders must still be connected
-                if !self.board.path_find(conflict.attacker_pos, conflict.defender_pos) {
+                if !self
+                    .board
+                    .path_find(conflict.attacker_pos, conflict.defender_pos)
+                {
                     return Err(Error::LeadersDisconnected);
                 }
             }
@@ -528,10 +519,11 @@ impl TnEGame {
                             .retain(|con| con.leader != leader);
 
                         // credit unification cell
-                        let ExternalConflict {unification_tile_pos, unification_tile_type, ..} = self
-                            .external_conflict
-                            .as_ref()
-                            .unwrap();
+                        let ExternalConflict {
+                            unification_tile_pos,
+                            unification_tile_type,
+                            ..
+                        } = self.external_conflict.as_ref().unwrap();
                         let unification_cell = self.board.get_mut(*unification_tile_pos);
                         // revert to original
                         unification_cell.terrain = Board::lookup_terrain(*unification_tile_pos);
@@ -559,7 +551,8 @@ impl TnEGame {
 
                     // if external conflict, check if there's another leader we can select
                     if let Some(ex) = &mut self.external_conflict {
-                        ex.conflicts.retain(|i| self.board.path_find(i.attacker_pos, i.defender_pos));
+                        ex.conflicts
+                            .retain(|i| self.board.path_find(i.attacker_pos, i.defender_pos));
                         if ex.conflicts.is_empty() {
                             self.external_conflict = None;
                             *check_treasure = true;
@@ -1087,7 +1080,9 @@ impl TnEGame {
     fn evict_leader(&mut self, pos: Pos) {
         let cell = self.board.get_mut(pos);
         if cell.leader != Leader::None {
-            self.players.get_mut(cell.player).set_leader(cell.leader, None);
+            self.players
+                .get_mut(cell.player)
+                .set_leader(cell.leader, None);
             cell.leader = Leader::None;
             cell.player = Player::None;
         }
@@ -1647,7 +1642,6 @@ impl Board {
         false
     }
 
-
     #[must_use]
     fn nearby_kingdoms_count(&self, pos: Pos) -> u8 {
         self.neighboring_kingdoms(pos).len() as u8
@@ -2066,6 +2060,24 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    macro_rules! p1 {
+        () => {
+            (Player::Player1, PlayerAction::Normal)
+        };
+        ($i:expr) => {
+            (Player::Player1, $i)
+        };
+    }
+
+    macro_rules! p2 {
+        () => {
+            (Player::Player2, PlayerAction::Normal)
+        };
+        ($i:expr) => {
+            (Player::Player2, $i)
+        };
+    }
 
     #[test]
     fn test_pos_neighbors() {

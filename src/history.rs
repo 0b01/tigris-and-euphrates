@@ -1,6 +1,6 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use crate::game::{Error, Action, TnEGame};
+use crate::game::{Action, Error, TnEGame};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HistoryBuffer {

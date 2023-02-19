@@ -124,8 +124,7 @@ impl PlayerAction {
                     for leader in
                         [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter()
                     {
-                        if let Some(from) = state.players.get(current_player).get_leader(leader)
-                        {
+                        if let Some(from) = state.players.get(current_player).get_leader(leader) {
                             moves.push(TnEMove::new(
                                 state.clone(),
                                 Action::MoveLeader {
@@ -149,7 +148,8 @@ impl PlayerAction {
 
                 if state.players.get(current_player).num_catastrophes > 0 {
                     for pos in state.board.find_catastrophe_positions() {
-                        moves.push(TnEMove::new(state.clone(),
+                        moves.push(TnEMove::new(
+                            state.clone(),
                             Action::PlaceCatastrophe { to: pos },
                         ));
                     }

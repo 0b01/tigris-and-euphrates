@@ -2,8 +2,8 @@ use macroquad::{miniquad::conf::Icon, prelude::*};
 use minimax::{Negamax, Strategy};
 
 use crate::game::{
-    Action, Cell, Leader, MonumentType, Movement, Player, PlayerAction, Pos, Terrain,
-    TileType, TnEGame, H, W,
+    Action, Cell, Leader, MonumentType, Movement, Player, PlayerAction, Pos, Terrain, TileType,
+    TnEGame, H, W,
 };
 use crate::{pos, solver::Evaluator};
 
@@ -310,7 +310,6 @@ impl GameUIState {
         }
     }
 
-
     fn get_hand(&self, game: &TnEGame) -> Vec<(Result<TileType, Leader>, Vec2)> {
         let mut ret = vec![];
         let player = &game.players.0[0];
@@ -360,8 +359,10 @@ impl GameUIState {
 
         // draw internal conflict, behind tiles
         if let Some(conflict) = game.internal_conflict.as_ref() {
-            self.textures.draw_texture_at_grid(self.textures.warning, conflict.attacker_pos);
-            self.textures.draw_texture_at_grid(self.textures.warning, conflict.defender_pos);
+            self.textures
+                .draw_texture_at_grid(self.textures.warning, conflict.attacker_pos);
+            self.textures
+                .draw_texture_at_grid(self.textures.warning, conflict.defender_pos);
         }
 
         // draw unification tile
@@ -370,7 +371,8 @@ impl GameUIState {
             .as_ref()
             .map(|i| i.unification_tile_pos)
         {
-            self.textures.draw_texture_at_grid(self.textures.unification, unification_tile_pos);
+            self.textures
+                .draw_texture_at_grid(self.textures.unification, unification_tile_pos);
         }
 
         // draw external conflict, a black circle surrounding leaders
@@ -394,7 +396,8 @@ impl GameUIState {
                 }
 
                 if let Some(pos) = game.players.get(Player::Player1).get_leader(leader) {
-                    self.textures.draw_texture_at_grid(self.textures.circle, pos);
+                    self.textures
+                        .draw_texture_at_grid(self.textures.circle, pos);
                 }
             }
         }
@@ -409,7 +412,8 @@ impl GameUIState {
         // if we can take treasure, draw treasure tiles
         if let PlayerAction::TakeTreasure(ts) = game.next_action() {
             for t in ts {
-                self.textures.draw_texture_at_grid(self.textures.treasure_blue, t);
+                self.textures
+                    .draw_texture_at_grid(self.textures.treasure_blue, t);
             }
         }
 
@@ -546,7 +550,6 @@ async fn run(mut game: TnEGame) {
 
         // if we are holding a tile
         if let Some(holding_type) = ui.selected {
-
             // if clicked in the grid
             let pos = if in_grid(mouse_logical) {
                 // snap to grid

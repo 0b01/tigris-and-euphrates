@@ -6,13 +6,13 @@ use game::Leader;
 use game::Movement;
 use game::TileType;
 use history::HistoryBuffer;
-use minimax::MCTSOptions;
-use minimax::MonteCarloTreeSearch;
-use minimax::Random;
 use minimax::perft;
 use minimax::Game;
+use minimax::MCTSOptions;
+use minimax::MonteCarloTreeSearch;
 use minimax::Move;
 use minimax::Negamax;
+use minimax::Random;
 use minimax::Strategy;
 
 use crate::game::Player;
@@ -22,9 +22,9 @@ use crate::{
 };
 
 pub mod game;
+mod history;
 mod solver;
 mod visualizer;
-mod history;
 
 fn main() {
     // visualizer::play(TnEGame::new());
@@ -35,28 +35,24 @@ fn main() {
 pub fn test_play_history() {
     let mut buf = HistoryBuffer::new();
     buf.push(TnEGame::new());
-    buf
-        .process(Action::MoveLeader {
-            movement: Movement::Place(pos!("1B")),
-            leader: Leader::Red,
-        })
-        .unwrap();
-    buf
-        .process(Action::PlaceTile {
-            to: pos!("1D"),
-            tile_type: TileType::Red,
-        })
-        .unwrap();
-    buf
-        .process(Action::MoveLeader {
-            movement: Movement::Place(pos!("2D")),
-            leader: Leader::Red,
-        })
-        .unwrap();
+    buf.process(Action::MoveLeader {
+        movement: Movement::Place(pos!("1B")),
+        leader: Leader::Red,
+    })
+    .unwrap();
+    buf.process(Action::PlaceTile {
+        to: pos!("1D"),
+        tile_type: TileType::Red,
+    })
+    .unwrap();
+    buf.process(Action::MoveLeader {
+        movement: Movement::Place(pos!("2D")),
+        leader: Leader::Red,
+    })
+    .unwrap();
 
     visualizer::history_viewer(buf.history);
 }
-
 
 fn test_play() {
     let mut state = TnEGame::new();
@@ -84,10 +80,7 @@ fn test_play() {
     // let mut p1_strat = Negamax::new(Evaluator::default(), 2);
     // let mut p2_strat = Negamax::new(Evaluator::default(), 2);
 
-    let mut p1_strat = MonteCarloTreeSearch::new(
-        MCTSOptions::default()
-            .with_num_threads(1)
-    );
+    let mut p1_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
     // let mut p2_strat = MonteCarloTreeSearch::new(
     //     MCTSOptions::default()
     //         // .with_num_threads(1)
