@@ -28,11 +28,12 @@ mod visualizer;
 
 fn main() {
     // visualizer::play(TnEGame::new());
+    // test_history();
     // test_play();
-    test_play_history();
+    test_perft()
 }
 
-pub fn test_play_history() {
+pub fn test_history() {
     let mut buf = HistoryBuffer::new();
     buf.push(TnEGame::new());
     buf.process(Action::MoveLeader {
@@ -58,36 +59,14 @@ fn test_play() {
     let mut state = TnEGame::new();
 
     // // some preset scenarios for debugging:
-    state
-        .process(Action::MoveLeader {
-            movement: Movement::Place(pos!("1B")),
-            leader: Leader::Red,
-        })
-        .unwrap();
-    state
-        .process(Action::PlaceTile {
-            to: pos!("1D"),
-            tile_type: TileType::Red,
-        })
-        .unwrap();
-    state
-        .process(Action::MoveLeader {
-            movement: Movement::Place(pos!("2D")),
-            leader: Leader::Red,
-        })
-        .unwrap();
-
     // let mut p1_strat = Negamax::new(Evaluator::default(), 2);
     // let mut p2_strat = Negamax::new(Evaluator::default(), 2);
 
     let mut p1_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
-    // let mut p2_strat = MonteCarloTreeSearch::new(
-    //     MCTSOptions::default()
-    //         // .with_num_threads(1)
-    // );
+    let mut p2_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
 
     // let mut p1_strat = Random::<TigrisAndEuphrates>::new();
-    let mut p2_strat = Random::<TigrisAndEuphrates>::new();
+    // let mut p2_strat = Random::<TigrisAndEuphrates>::new();
 
     // let mut p2_strat = Random::new();
     while TigrisAndEuphrates::get_winner(&state).is_none() {

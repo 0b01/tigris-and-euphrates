@@ -1,10 +1,11 @@
 use macroquad::{miniquad::conf::Icon, prelude::*};
-use minimax::{Negamax, Strategy};
+use minimax::{Negamax, Strategy, Random};
 
 use crate::game::{
-    Action, Cell, Leader, MonumentType, Movement, Player, PlayerAction, Pos, Terrain, TileType,
+    Action, Leader, MonumentType, Movement, Player, PlayerAction, Pos, TileType,
     TnEGame, H, W,
 };
+use crate::solver::TigrisAndEuphrates;
 use crate::{pos, solver::Evaluator};
 
 // the top left corner of the grid
@@ -229,14 +230,15 @@ impl Textures {
         )
     }
 
-    fn draw(&self, game: &TnEGame, cell: &Cell, pos: Pos) {
-        let texture = if cell.terrain == Terrain::MonumentTopLeft {
+    fn draw(&self, game: &TnEGame, pos: Pos) {
+        let texture = if game.board.get_monument(pos) {
             let m = game
                 .monuments
                 .iter()
                 .filter(|m| m.pos_top_left == pos)
-                .next()
-                .unwrap();
+                .next();
+            if m.is_none() { return; }
+            let m = m.unwrap();
             let texture = match m.monument_type {
                 MonumentType::RedBlue => self.monument_red_blue,
                 MonumentType::BlackGreen => self.monument_black_green,
@@ -259,22 +261,22 @@ impl Textures {
                 },
             );
             return;
-        } else if cell.terrain == Terrain::Monument {
+        } else if game.board.get_monument(pos) {
             None
-        } else if cell.terrain == Terrain::Catastrophe {
+        } else if game.board.get_catastrophe(pos) {
             Some(self.catastrophe)
-        } else if cell.has_treasure {
+        } else if game.board.get_treasure(pos) {
             Some(self.t_red_treasure)
-        } else if cell.tile_type == TileType::Red {
+        } else if game.board.get_tile_type(pos) == TileType::Red {
             Some(self.t_red)
-        } else if cell.tile_type == TileType::Blue {
+        } else if game.board.get_tile_type(pos) == TileType::Blue {
             Some(self.t_blue)
-        } else if cell.tile_type == TileType::Black {
+        } else if game.board.get_tile_type(pos) == TileType::Black {
             Some(self.t_black)
-        } else if cell.tile_type == TileType::Green {
+        } else if game.board.get_tile_type(pos) == TileType::Green {
             Some(self.t_green)
         } else {
-            match (cell.leader, cell.player) {
+            match (game.board.get_leader(pos), game.board.get_player(pos)) {
                 (Leader::Blue, Player::Player1) => Some(self.bull_blue),
                 (Leader::Blue, Player::Player2) => Some(self.vase_blue),
                 (Leader::Green, Player::Player1) => Some(self.bull_green),
@@ -403,9 +405,10 @@ impl GameUIState {
         }
 
         // draw the tiles
-        for (i, row) in game.board.0.iter().enumerate() {
-            for (j, cell) in row.iter().enumerate() {
-                self.textures.draw(&game, cell, pos!(i as u8, j as u8));
+
+        for x in 0..H {
+            for y in 0..W {
+                self.textures.draw(game, pos!(x as u8, y as u8));
             }
         }
 
@@ -440,8 +443,8 @@ async fn run_history(history: Vec<TnEGame>) {
 
 async fn run(mut game: TnEGame) {
     let mut ui = GameUIState::new().await;
-    let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
-    // let mut strategy = Random::<TigrisAndEuphrates>::default();
+    // let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
+    let mut ai_strategy = Random::<TigrisAndEuphrates>::default();
 
     loop {
         let mouse_logical = mouse_position_logical();

@@ -1,7 +1,7 @@
-use numpy::ndarray::{ArrayD, Array3};
-use numpy::{IntoPyArray, PyArrayDyn, PyArray3};
+use numpy::ndarray::{Array3};
+use numpy::{IntoPyArray, PyArray3};
 use pyo3::{pymodule, types::PyModule, PyResult, Python};
-use crate::game::{TnEGame, Action, Pos, W, H, Tiles, Movement, Leader, TileType, Player, Terrain, Monument};
+use crate::game::{TnEGame, Action, Pos, W, H, Tiles, Movement, Leader, TileType, Player, Monument, RIVER};
 use crate::pos;
 
 use pyo3::prelude::*;
@@ -55,8 +55,7 @@ pub enum Plane {
     MonumentBlue,
     MonumentBlack,
 
-    CanPlaceNonRiverTile,
-    CanPlaceRiverTile,
+    CanPlaceTile,
     CanPlaceCatastrophe,
     CanPlaceLeader,
     CanTriggerWar,
@@ -118,36 +117,38 @@ impl TnEGame {
 
     #[pyo3(name="state")]
     fn state<'py>(&self, py: Python<'py>) -> &'py PyArray3<f64> {
-        let mut z = Array3::zeros((Plane::Last as usize, W, H));
+        let mut z = Array3::zeros((Plane::Last as usize, H, W));
         for x in 0..H {
             for y in 0..W {
-                let cell = self.board.get(pos!(x as u8, y as u8));
-                z[[Plane::TileRed as usize, x, y]] = (cell.tile_type == TileType::Red) as u8 as _;
-                z[[Plane::TileGreen as usize, x, y]] = (cell.tile_type == TileType::Green) as u8 as _;
-                z[[Plane::TileBlue as usize, x, y]] = (cell.tile_type == TileType::Blue) as u8 as _;
-                z[[Plane::TileBlack as usize, x, y]] = (cell.tile_type == TileType::Black) as u8 as _;
+                let pos = pos!(x as u8, y as u8);
+                z[[Plane::TileRed as usize, x, y]] = (self.board.get_tile_type(pos) == TileType::Red) as u8 as _;
+                z[[Plane::TileGreen as usize, x, y]] = (self.board.get_tile_type(pos) == TileType::Green) as u8 as _;
+                z[[Plane::TileBlue as usize, x, y]] = (self.board.get_tile_type(pos) == TileType::Blue) as u8 as _;
+                z[[Plane::TileBlack as usize, x, y]] = (self.board.get_tile_type(pos) == TileType::Black) as u8 as _;
 
-                z[[Plane::P1RedLeader as usize, x, y]] = (cell.leader == Leader::Red && cell.player == Player::Player1) as u8 as _;
-                z[[Plane::P1GreenLeader as usize, x, y]] = (cell.leader == Leader::Green && cell.player == Player::Player1) as u8 as _;
-                z[[Plane::P1BlueLeader as usize, x, y]] = (cell.leader == Leader::Blue && cell.player == Player::Player1) as u8 as _;
-                z[[Plane::P1BlackLeader as usize, x, y]] = (cell.leader == Leader::Black && cell.player == Player::Player1) as u8 as _;
+                z[[Plane::P1RedLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Red && self.board.get_player(pos) == Player::Player1) as u8 as _;
+                z[[Plane::P1GreenLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Green && self.board.get_player(pos) == Player::Player1) as u8 as _;
+                z[[Plane::P1BlueLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Blue && self.board.get_player(pos) == Player::Player1) as u8 as _;
+                z[[Plane::P1BlackLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Black && self.board.get_player(pos) == Player::Player1) as u8 as _;
 
-                z[[Plane::P2RedLeader as usize, x, y]] = (cell.leader == Leader::Red && cell.player == Player::Player2) as u8 as _;
-                z[[Plane::P2GreenLeader as usize, x, y]] = (cell.leader == Leader::Green && cell.player == Player::Player2) as u8 as _;
-                z[[Plane::P2BlueLeader as usize, x, y]] = (cell.leader == Leader::Blue && cell.player == Player::Player2) as u8 as _;
-                z[[Plane::P2BlackLeader as usize, x, y]] = (cell.leader == Leader::Black && cell.player == Player::Player2) as u8 as _;
+                z[[Plane::P2RedLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Red && self.board.get_player(pos) == Player::Player2) as u8 as _;
+                z[[Plane::P2GreenLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Green && self.board.get_player(pos) == Player::Player2) as u8 as _;
+                z[[Plane::P2BlueLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Blue && self.board.get_player(pos) == Player::Player2) as u8 as _;
+                z[[Plane::P2BlackLeader as usize, x, y]] = (self.board.get_leader(pos) == Leader::Black && self.board.get_player(pos) == Player::Player2) as u8 as _;
 
-                z[[Plane::River as usize, x, y]] = (cell.terrain == Terrain::River) as u8 as _;
-                z[[Plane::Treasure as usize, x, y]] = (cell.has_treasure) as u8 as _;
-                z[[Plane::Catastrophe as usize, x, y]] = (cell.terrain == Terrain::Catastrophe) as u8 as _;
-                z[[Plane::AnyMonument as usize, x, y]] = (cell.terrain == Terrain::Monument || cell.terrain == Terrain::MonumentTopLeft) as u8 as _;
-                z[[Plane::UnificationTile as usize, x, y]] = (cell.terrain == Terrain::UnificationTile) as u8 as _;
+                z[[Plane::River as usize, x, y]] = RIVER.get(pos) as u8 as _;
+                z[[Plane::Treasure as usize, x, y]] = self.board.get_treasure(pos) as u8 as _;
+                z[[Plane::Catastrophe as usize, x, y]] = (self.board.get_catastrophe(pos)) as u8 as _;
+                z[[Plane::AnyMonument as usize, x, y]] = (self.board.get_monument(pos)) as u8 as _;
 
-                z[[Plane::CanPlaceNonRiverTile as usize, x, y]] = cell.can_place_non_river_tile() as u8 as _;
-                z[[Plane::CanPlaceRiverTile as usize, x, y]] = cell.can_place_river_tile() as u8 as _;
-                z[[Plane::CanPlaceCatastrophe as usize, x, y]] = cell.can_place_catastrophe() as u8 as _;
+                z[[Plane::CanPlaceTile as usize, x, y]] = self.board.can_place_tile(pos) as u8 as _;
+                z[[Plane::CanPlaceCatastrophe as usize, x, y]] = self.board.can_place_catastrophe(pos) as u8 as _;
                 // z[[Plane::CanPlaceLeader as usize, x, y]] = 
             }
+        }
+
+        if let Some(u) = self.board.unification_tile {
+            z[[Plane::UnificationTile as usize, u.x as usize, u.y as usize]] = 1 as _;
         }
 
         for Monument {monument_type, pos_top_left} in self.monuments.iter() {

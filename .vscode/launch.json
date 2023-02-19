@@ -11,7 +11,7 @@
             "cargo": {
                 "args": [
                     "build",
-                    // "--release",
+                    "--release",
                     "--bin=tigris-and-euphrates",
                     "--package=tigris-and-euphrates"
                 ],
