@@ -59,12 +59,11 @@ pub fn view_history_json(path: &str) {
 fn test_play() {
     let mut history = HistoryBuffer::new();
 
-    // // some preset scenarios for debugging:
-    // let mut p1_strat = Negamax::new(Evaluator::default(), 2);
-    // let mut p2_strat = Negamax::new(Evaluator::default(), 2);
+    let mut p1_strat = Negamax::new(Evaluator::default(), 2);
+    let mut p2_strat = Negamax::new(Evaluator::default(), 2);
 
-    let mut p1_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
-    let mut p2_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
+    // let mut p1_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
+    // let mut p2_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
 
     // let mut p1_strat = Random::<TigrisAndEuphrates>::new();
     // let mut p2_strat = Random::<TigrisAndEuphrates>::new();
@@ -102,5 +101,5 @@ fn test_play() {
 
 fn test_perft() {
     let mut state = TnEGame::new();
-    perft::<TigrisAndEuphrates>(&mut state, 3, false);
+    perft::<TigrisAndEuphrates>(&mut state, 4, false);
 }

@@ -77,11 +77,54 @@ pub struct Monument {
     pub pos_top_left: Pos,
 }
 
+/// record last N moves
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MoveHistory<const N: usize> {
+    pub last_placed_tiles: Vec<Option<Pos>>,
+    pub last_moved_leaders: Vec<Option<Pos>>,
+}
+
+impl<const N: usize> MoveHistory<N> {
+    pub const N: usize = N;
+
+    pub fn new() -> Self {
+        Self {
+            last_placed_tiles: vec![None; N],
+            last_moved_leaders: vec![None; N],
+        }
+    }
+
+    pub fn record(&mut self, action: &Action) {
+        // always keep length = N
+
+        self.last_placed_tiles.remove(0);
+        self.last_moved_leaders.remove(0);
+
+        let (t, l) = match action {
+            Action::PlaceTile { to, .. } => {
+                (Some(*to), None)
+            }
+            Action::MoveLeader { movement, .. } => {
+                match movement {
+                    Movement::Place(to) => (None, Some(*to)),
+                    Movement::Move { to, .. } => (None, Some(*to)),
+                    Movement::Withdraw(_) => (None, None),
+                }
+            }
+            _ => (None, None),
+        };
+
+        self.last_moved_leaders.push(l);
+        self.last_placed_tiles.push(t);
+    }
+}
+
 #[cfg_attr(feature="python", pyo3::pyclass)]
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TnEGame {
     pub board: Board,
     pub players: Players,
+    pub move_history: MoveHistory<6>,
     bag: Tiles,
 
     pub available_monuments: Vec<MonumentType>,
@@ -170,6 +213,7 @@ impl TnEGame {
             board: Board::new(),
             players: Players([PlayerState::new(); 2]),
             state: vec![GameState::Normal],
+            move_history: MoveHistory::new(),
             available_monuments: vec![
                 MonumentType::RedGreen,
                 MonumentType::RedBlue,
@@ -210,6 +254,7 @@ impl TnEGame {
     pub fn validate_action(&self, action: Action, state: GameState) -> Result<()> {
         let current_player = self.next_player();
         let curr_player_state = self.players.get(current_player);
+        let kingdom_count = self.board.nearby_kingdom_count();
 
         let is_valid = match (state, action) {
             (GameState::Normal, Action::PlaceTile { .. })
@@ -330,7 +375,7 @@ impl TnEGame {
                 }
 
                 // cannot join three kingdoms
-                if self.board.neighboring_kingdoms(to).len() as u8 > 2 {
+                if kingdom_count[to.x as usize][to.y as usize] > 2 {
                     return Err(Error::CannotJoinThreeKingdoms);
                 }
             }
@@ -342,7 +387,7 @@ impl TnEGame {
                     if curr_player_state.get_leader(leader).is_some() {
                         return Err(Error::LeaderAlreadyPlaced);
                     }
-                    self.check_leader_placement(to)?;
+                    self.check_leader_placement(to, kingdom_count)?;
                 }
                 Movement::Move { from, to } => {
                     if self.board.get_leader(from) != leader {
@@ -355,7 +400,7 @@ impl TnEGame {
                         return Err(Error::CannotPlaceOverLeader);
                     }
 
-                    self.check_leader_placement(to)?;
+                    self.check_leader_placement(to, kingdom_count)?;
                 }
                 Movement::Withdraw(pos) => {
                     if self.board.get_leader(pos) != leader {
@@ -403,9 +448,9 @@ impl TnEGame {
         &mut self,
         action: Action,
         current_player: Player,
-        check_treasure: &mut bool,
-    ) -> Option<GameState> {
+    ) -> (Option<GameState>, Vec<(Player, PlayerAction, GameState)>) {
         let curr_player = self.players.get_mut(current_player);
+        let mut extra_actions = Vec::new();
 
         let next_state = match action {
             Action::BuildMonument {
@@ -538,7 +583,6 @@ impl TnEGame {
                             .add_score_by(c.conflict_leader.as_tile_type(), points);
 
                         let leader = c.conflict_leader;
-                        drop(c);
 
                         // remove the leader we just resolved from external conflicts
                         self.external_conflict
@@ -572,7 +616,7 @@ impl TnEGame {
                         Some(_) => {
                             self.internal_conflict = None;
                         }
-                        None => return None,
+                        None => return (None, vec![]),
                     };
 
                     // if external conflict, check if there's another leader we can select
@@ -580,8 +624,13 @@ impl TnEGame {
                         ex.conflicts
                             .retain(|i| self.board.path_find(i.attacker_pos, i.defender_pos));
                         if ex.conflicts.is_empty() {
+                            let uni_pos = self.external_conflict.as_ref().unwrap().unification_tile_pos;
+                            let uni_tile_type = self.external_conflict.as_ref().unwrap().unification_tile_type;
+                            self.check_treasure_at(uni_pos, &mut extra_actions);
+                            self.check_monument(uni_pos, uni_tile_type, &mut extra_actions);
+
                             self.external_conflict = None;
-                            *check_treasure = true;
+
                             Some(GameState::Normal)
                         } else {
                             self.play_action_stack.push((
@@ -596,7 +645,7 @@ impl TnEGame {
                             Some(GameState::WarSelectLeader)
                         }
                     } else {
-                        *check_treasure = true;
+                        // *check_treasure = true;
                         Some(GameState::Normal)
                     }
                 } else {
@@ -721,8 +770,8 @@ impl TnEGame {
                         }
                         (None, None) => (),
                     }
-
-                    *check_treasure = true;
+                    self.check_treasure_at(to, &mut extra_actions);
+                    self.check_monument(to, tile_type, &mut extra_actions);
                     Some(GameState::Normal)
                 }
             }
@@ -730,7 +779,7 @@ impl TnEGame {
                 Movement::Place(pos) => {
                     let next_state = self.check_internal_conflict(pos, leader, current_player);
                     if next_state == GameState::Normal {
-                        *check_treasure = true;
+                        self.check_treasure_at(pos, &mut extra_actions);
                     }
 
                     self.board.set_leader(pos, leader);
@@ -743,7 +792,7 @@ impl TnEGame {
                 Movement::Move { from, to } => {
                     let next_state = self.check_internal_conflict(to, leader, current_player);
                     if next_state == GameState::Normal {
-                        *check_treasure = true;
+                        self.check_treasure_at(to, &mut extra_actions);
                     }
 
                     self.players
@@ -781,9 +830,9 @@ impl TnEGame {
 
         // check if game is over
         if self.board.available_treasures_count() == 2 || self.bag.is_empty() {
-            None
+            (None, extra_actions)
         } else {
-            next_state
+            (next_state, extra_actions)
         }
     }
 
@@ -913,22 +962,22 @@ impl TnEGame {
             self.state.push(current_state);
             return Err(e);
         }
+        if current_state == GameState::Normal {
+            self.move_history.record(&action);
+        }
         let (current_player, _) = self.play_action_stack.pop().unwrap();
-        let mut check_treasure = false;
-        let next_state = self.process_action(action, current_player, &mut check_treasure);
         if current_state == GameState::Normal {
             self.last_player_normal_action = current_player;
         }
+        let (next_state, extra_actions) = self.process_action(action, current_player);
         if let Some(next_state) = next_state {
             // println!("{:?} => {:?}, {action:?}", current_state, next_state);
             self.state.push(next_state);
         }
 
-        if check_treasure {
-            self.check_treasure();
-            if let Action::PlaceTile { to, tile_type } = action {
-                self.check_monument(to, tile_type);
-            }
+        for (player, action, state) in extra_actions {
+            self.play_action_stack.push((player, action));
+            self.state.push(state);
         }
 
         self.last_action_player = current_player;
@@ -938,23 +987,20 @@ impl TnEGame {
         Ok(self.next())
     }
 
-    fn check_treasure(&mut self) {
+    fn check_treasure_at(&self, pos: Pos, extra_actions: &mut Vec<(Player, PlayerAction, GameState)>) {
         // check if treasure is available for taking
         // TODO: must take corner treasures first
-        for kingdom in self.board.kingdoms() {
-            if kingdom.treasures.iter().filter(|i| i.is_some()).count() > 1
-                && kingdom.green_leader.is_some()
-            {
-                let green_player = kingdom.green_leader.unwrap().0;
-                let treasures = kingdom.treasures.map(Option::unwrap);
-                self.play_action_stack
-                    .push((green_player, PlayerAction::TakeTreasure(treasures)));
-                self.state.push(GameState::TakeTreasure);
-            }
+        let kingdom = self.board.find_kingdom(pos, &mut Bitboard::new());
+        if kingdom.treasures.iter().filter(|i| i.is_some()).count() > 1
+            && kingdom.green_leader.is_some()
+        {
+            let green_player = kingdom.green_leader.unwrap().0;
+            let treasures = kingdom.treasures.map(Option::unwrap);
+            extra_actions.push((green_player, PlayerAction::TakeTreasure(treasures), GameState::TakeTreasure))
         }
     }
 
-    fn check_monument(&mut self, pos: Pos, color: TileType) {
+    fn check_monument(&self, pos: Pos, color: TileType, extra_actions: &mut Vec<(Player, PlayerAction, GameState)>) {
         // monument can be built on a 2x2 square made of same tiles
         // check if monument is available for building
         let mut monument = false;
@@ -1012,11 +1058,11 @@ impl TnEGame {
             .collect::<Vec<_>>();
 
         if monument && !avail.is_empty() {
-            self.play_action_stack.push((
+            extra_actions.push((
                 self.last_player_normal_action,
                 PlayerAction::BuildMonument(top_left.unwrap(), avail),
-            ));
-            self.state.push(GameState::BuildMonument);
+                GameState::BuildMonument
+            ))
         }
     }
 
@@ -1030,7 +1076,7 @@ impl TnEGame {
         false
     }
 
-    fn check_leader_placement(&self, pos: Pos) -> Result<()> {
+    fn check_leader_placement(&self, pos: Pos, kingdom_count: [[u8; W]; H]) -> Result<()> {
         if self.board.get_leader(pos) != Leader::None {
             return Err(Error::CannotPlaceOverLeader);
         }
@@ -1054,7 +1100,7 @@ impl TnEGame {
         }
 
         // a leader cannot join two kingdoms
-        if self.board.nearby_kingdom_count()[pos.x as usize][pos.y as usize] > 1 {
+        if kingdom_count[pos.x as usize][pos.y as usize] > 1 {
             return Err(Error::CannotPlaceLeaderJoiningTwoKingdoms);
         }
 
@@ -1758,7 +1804,7 @@ impl Board {
         ret
     }
 
-    fn is_connectable(&self, pos: Pos) -> bool {
+    pub fn is_connectable(&self, pos: Pos) -> bool {
         self.get_tile_type(pos) != TileType::Empty
             || self.get_leader(pos) != Leader::None
             || self.unification_tile == Some(pos)
@@ -2043,10 +2089,12 @@ impl Board {
         ret
     }
 
+    #[inline(always)]
     pub fn get_monument(&self, pos: Pos) -> bool {
         self.monuments.get(pos)
     }
 
+    #[inline(always)]
     pub fn set_monument(&mut self, pos: Pos, v: bool) {
         if v {
             self.monuments.set(pos)
@@ -2056,10 +2104,12 @@ impl Board {
     }
 
 
+    #[inline(always)]
     pub fn get_treasure(&self, pos: Pos) -> bool {
         self.treasures.get(pos)
     }
 
+    #[inline(always)]
     pub fn set_treasure(&mut self, pos: Pos, v: bool) {
         if v {
             self.treasures.set(pos)
@@ -2068,6 +2118,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn set_catastrophe(&mut self, to: Pos, arg: bool) {
         if arg {
             self.catastrophes.set(to)
@@ -2076,10 +2127,12 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn get_catastrophe(&self, pos: Pos) -> bool {
         self.catastrophes.get(pos)
     }
 
+    #[inline(always)]
     pub fn set_player(&mut self, pos: Pos, player: Player) {
         match player {
             Player::None => { self.player1.reset(pos); self.player2.reset(pos); },
@@ -2088,6 +2141,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn get_player(&self, from: Pos) -> Player {
         if self.player1.get(from) {
             Player::Player1
@@ -2098,6 +2152,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn get_leader(&self, pos: Pos) -> Leader {
         if self.leader_red.get(pos) {
             Leader::Red
@@ -2112,6 +2167,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn set_leader(&mut self, pos: Pos, leader: Leader) {
         match leader {
             Leader::None => {
@@ -2127,6 +2183,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn get_tile_type(&self, pos: Pos) -> TileType {
         if self.red_tiles.get(pos) {
             TileType::Red
@@ -2141,6 +2198,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn set_tile_type(&mut self, pos: Pos, tile_type: TileType) {
         match tile_type {
             TileType::Empty => {

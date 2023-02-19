@@ -41,7 +41,7 @@ impl HistoryBuffer {
         Ok(Self { history })
     }
 
-    pub(crate) fn last_mut(&mut self) -> &mut TnEGame {
+    pub fn last_mut(&mut self) -> &mut TnEGame {
         self.history.last_mut().unwrap()
     }
 }
