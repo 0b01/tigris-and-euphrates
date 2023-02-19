@@ -1,4 +1,5 @@
-use packed_struct::prelude::*;
+use packed_struct::{prelude::*, derive};
+use primitive_types::U256;
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
 pub const W: usize = 16;
@@ -40,6 +41,7 @@ pub struct Monument {
     pub pos_top_left: Pos,
 }
 
+#[cfg_attr(feature="python", pyo3::pyclass)]
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TnEGame {
     pub board: Board,
@@ -164,7 +166,9 @@ impl TnEGame {
 
         game
     }
+}
 
+impl TnEGame {
     pub fn validate_action(&self, action: Action, state: GameState) -> Result<()> {
         let current_player = self.next_player();
         let curr_player_state = self.players.get(current_player);
@@ -529,7 +533,7 @@ impl TnEGame {
                         unification_cell.terrain = Board::lookup_terrain(*unification_tile_pos);
                         unification_cell.tile_type = *unification_tile_type;
                         let unification_cell = self.board.get(*unification_tile_pos); // drop mut and reborrow
-                        let mut visited = [[false; W]; H];
+                        let mut visited = Bitboard::new();
                         let kingdom = self.board.find_kingdom(*unification_tile_pos, &mut visited);
                         if let Some((p, _, _)) =
                             kingdom.get_leader_info(unification_cell.tile_type.as_leader())
@@ -855,7 +859,7 @@ impl TnEGame {
                 pos_top_left: monument_top_left,
             } in &self.monuments
             {
-                let mut visited = [[false; W]; H];
+                let mut visited = Bitboard::new();
                 let kingdom = self.board.find_kingdom(*monument_top_left, &mut visited);
                 for leader in monument_type.unpack() {
                     if let Some((p, _, _)) = kingdom.get_leader_info(leader) {
@@ -1038,7 +1042,7 @@ impl TnEGame {
         }
 
         // a leader cannot join two kingdoms
-        if self.board.nearby_kingdoms_count(pos) > 1 {
+        if self.board.nearby_kingdom_count()[pos.x as usize][pos.y as usize] > 1 {
             return Err(Error::CannotPlaceLeaderJoiningTwoKingdoms);
         }
 
@@ -1188,10 +1192,10 @@ pub enum Action {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tiles {
-    red: u8,
-    black: u8,
-    green: u8,
-    blue: u8,
+    pub red: u8,
+    pub black: u8,
+    pub green: u8,
+    pub blue: u8,
 }
 impl Tiles {
     fn sum(&self) -> u8 {
@@ -1264,6 +1268,16 @@ impl Tiles {
 
     fn is_empty(&self) -> bool {
         self.red == 0 && self.black == 0 && self.green == 0 && self.blue == 0
+    }
+
+    pub fn count(&self, tile_type: TileType) -> u8 {
+        match tile_type {
+            TileType::Red => self.red,
+            TileType::Black => self.black,
+            TileType::Green => self.green,
+            TileType::Blue => self.blue,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -1521,7 +1535,7 @@ impl PlayerState {
                 }
 
                 // 5 points for each matching tile in kingdom
-                let mut visited = [[false; W]; H];
+                let mut visited = Bitboard::new();
                 let kingdom = state.board.find_kingdom(pos, &mut visited);
                 s += kingdom.get_leader_info(leader).unwrap().2 as i16 * 5;
             }
@@ -1548,6 +1562,34 @@ impl PlayerState {
             ret.push(TileType::Blue);
         }
         ret
+    }
+}
+
+/// Bitboard for fast operations on the board 
+#[derive(Debug, Clone, Eq, PartialEq, derive_more::Not, derive_more::BitXor, derive_more::BitAnd, derive_more::BitOr)]
+pub struct Bitboard(pub U256);
+
+impl Bitboard {
+    pub fn new() -> Self {
+        Self(U256::from(0))
+    }
+
+    pub fn set(&mut self, pos: Pos) {
+        let x = U256::from(pos.x);
+        let y = U256::from(pos.y);
+        self.0 |= U256::one() << (x * W + y);
+    }
+
+    pub fn clear(&mut self, pos: Pos) {
+        let x = U256::from(pos.x);
+        let y = U256::from(pos.y);
+        self.0 &= !(U256::one() << (x * W + y));
+    }
+
+    pub fn get(&self, pos: Pos) -> bool {
+        let x = U256::from(pos.x);
+        let y = U256::from(pos.y);
+        self.0 & (U256::one() << (x * W + y)) != U256::zero()
     }
 }
 
@@ -1606,9 +1648,9 @@ impl Board {
 
     pub fn neighboring_kingdoms(&self, to: Pos) -> Vec<Kingdom> {
         let mut kingdoms = vec![];
-        let mut visited = [[false; W]; H];
+        let mut visited = Bitboard::new();
         for neighbor in to.neighbors() {
-            if visited[neighbor.x as usize][neighbor.y as usize] {
+            if visited.get(neighbor) {
                 continue;
             }
             let k = self.find_kingdom(neighbor, &mut visited);
@@ -1642,18 +1684,16 @@ impl Board {
         false
     }
 
-    #[must_use]
-    fn nearby_kingdoms_count(&self, pos: Pos) -> u8 {
-        self.neighboring_kingdoms(pos).len() as u8
-    }
-
     pub fn find_empty_leader_space_next_to_red(&self) -> Vec<Pos> {
         let mut ret = Vec::new();
+
+        let count = self.nearby_kingdom_count();
+
         for x in 0..H {
             for y in 0..W {
                 if self.0[x][y].tile_type == TileType::Red {
                     for pos in pos!(x as u8, y as u8).neighbors() {
-                        if self.nearby_kingdoms_count(pos) > 1 {
+                        if count[pos.x as usize][pos.y as usize] > 1 {
                             continue;
                         }
 
@@ -1673,17 +1713,57 @@ impl Board {
         ret
     }
 
+    fn nearby_kingdom_count(&self) -> [[u8; 16]; 11] {
+        // for each grid cell, count number of neighboring kingdoms
+        let mut visited = Bitboard::new();
+        let mut count = [[0_u8; W]; H];
+        for x in 0..H {
+            for y in 0..W {
+                let pos = pos!(x as u8, y as u8);
+                if visited.get(pos) {
+                    continue;
+                }
+                visited.set(pos);
+                let mut temp_visited = Bitboard::new();
+
+                let kingdom = self.find_kingdom(pos!(x as u8, y as u8), &mut temp_visited);
+                if !kingdom.has_leader() {
+                    continue;
+                }
+
+                let mut temp_count = [[0; W]; H];
+
+                // find surrounding empty cells
+                for xx in 0..H {
+                    for yy in 0..W {
+                        let pos = pos!(xx as u8, yy as u8);
+                        // skip kingdom itself
+                        if temp_visited.get(pos) { continue; }
+                        let is_near_kingdom = pos.neighbors().iter().any(|p| temp_visited.get(*p));
+                        if is_near_kingdom {
+                            temp_count[xx][yy] = 1;
+                        }
+                    }
+                }
+
+                for (rr, row) in count.iter_mut().enumerate() {
+                    for (cc, c) in row.iter_mut().enumerate() {
+                        *c += temp_count[rr][cc];
+                    }
+                }
+
+                visited = visited | temp_visited;
+            }
+        }
+        count
+    }
+
     pub fn find_catastrophe_positions(&self) -> Vec<Pos> {
         let mut ret = Vec::new();
         for x in 0..H {
             for y in 0..W {
                 let cell = self.0[x][y];
-                if cell.leader == Leader::None
-                    && cell.tile_type != TileType::Empty
-                    && !cell.has_treasure
-                    && cell.terrain != Terrain::Monument
-                    && cell.terrain != Terrain::MonumentTopLeft
-                {
+                if cell.can_place_catastrophe() {
                     ret.push(pos!(x as u8, y as u8));
                 }
             }
@@ -1692,7 +1772,7 @@ impl Board {
         ret
     }
 
-    pub fn find_kingdom(&self, pos: Pos, visited: &mut [[bool; W]; H]) -> Kingdom {
+    pub fn find_kingdom(&self, pos: Pos, visited: &mut Bitboard) -> Kingdom {
         let mut kingdom = Kingdom {
             red_leader: None,
             black_leader: None,
@@ -1708,10 +1788,10 @@ impl Board {
         let mut stack = vec![pos];
 
         while let Some(pos) = stack.pop() {
-            if visited[pos.x as usize][pos.y as usize] {
+            if visited.get(pos) {
                 continue;
             }
-            visited[pos.x as usize][pos.y as usize] = true;
+            visited.set(pos);
 
             let cell = self.get(pos);
             if !cell.is_connectable() {
@@ -1757,14 +1837,15 @@ impl Board {
 
     /// find all the kingdoms on the board
     pub fn kingdoms(&self) -> Vec<Kingdom> {
-        let mut visited = [[false; W]; H];
+        let mut visited = Bitboard::new();
         let mut kingdoms = vec![];
         for x in 0..H {
             for y in 0..W {
-                if visited[x][y] {
+                let pos = pos!(x as u8, y as u8);
+                if visited.get(pos) {
                     continue;
                 }
-                let kingdom = self.find_kingdom(pos!(x as u8, y as u8), &mut visited);
+                let kingdom = self.find_kingdom(pos, &mut visited);
                 if kingdom.has_leader() {
                     kingdoms.push(kingdom);
                 }
@@ -1796,17 +1877,11 @@ impl Board {
         for x in 0..H {
             for y in 0..W {
                 if kingdom[x][y] {
-                    for pos in pos!(x as u8, y as u8).neighbors() {
-                        let cell = self.get(pos);
+                    for neighbor in pos!(x as u8, y as u8).neighbors() {
+                        let cell = self.get(neighbor);
                         if cell.tile_type == TileType::Empty && cell.leader == Leader::None {
-                            if is_river_space {
-                                if cell.terrain == Terrain::River {
-                                    ret.push(pos);
-                                }
-                            } else {
-                                if cell.terrain != Terrain::River {
-                                    ret.push(pos);
-                                }
+                            if is_river_space == (cell.terrain == Terrain::River) {
+                                ret.push(neighbor);
                             }
                         }
                     }
@@ -1922,6 +1997,33 @@ impl Cell {
             || self.terrain == Terrain::Monument
             || self.terrain == Terrain::MonumentTopLeft
     }
+
+    pub fn can_place_river_tile(&self) -> bool {
+        self.terrain == Terrain::River
+            && self.terrain != Terrain::Catastrophe
+            && self.terrain != Terrain::Monument
+            && self.terrain != Terrain::MonumentTopLeft
+            && self.leader == Leader::None
+            && self.tile_type == TileType::Empty
+    }
+
+    pub fn can_place_non_river_tile(&self) -> bool {
+        self.terrain != Terrain::River
+            && self.terrain != Terrain::Catastrophe
+            && self.terrain != Terrain::Monument
+            && self.terrain != Terrain::MonumentTopLeft
+            && self.leader == Leader::None
+            && self.tile_type == TileType::Empty
+    }
+
+    pub fn can_place_catastrophe(&self) -> bool {
+        self.leader == Leader::None
+            && self.tile_type != TileType::Empty
+            && !self.has_treasure
+            && self.terrain != Terrain::Monument
+            && self.terrain != Terrain::MonumentTopLeft
+            && self.terrain != Terrain::Catastrophe
+    }
 }
 
 #[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1933,8 +2035,23 @@ pub enum MonumentType {
     BlackGreen,
     BlackBlue,
 }
+
+impl From<u8> for MonumentType {
+    fn from(val: u8) -> Self {
+        match val {
+            0b0011 => MonumentType::GreenBlue,
+            0b0101 => MonumentType::RedBlue,
+            0b0110 => MonumentType::RedGreen,
+            0b1001 => MonumentType::BlackBlue,
+            0b1010 => MonumentType::BlackGreen,
+            0b1100 => MonumentType::BlackRed,
+            _ => panic!("invalid monument type"),
+        }
+    }
+}
+
 impl MonumentType {
-    fn matches(&self, color: TileType) -> bool {
+    pub fn matches(&self, color: TileType) -> bool {
         match (color, self) {
             (TileType::Red, MonumentType::BlackRed) => true,
             (TileType::Red, MonumentType::RedGreen) => true,
@@ -1975,6 +2092,20 @@ pub enum TileType {
     Red,
     Black,
 }
+
+impl From<u8> for TileType {
+    fn from(val: u8) -> Self {
+        match val {
+            0b0000 => TileType::Empty,
+            0b0001 => TileType::Blue,
+            0b0010 => TileType::Green,
+            0b0100 => TileType::Red,
+            0b1000 => TileType::Black,
+            _ => panic!("invalid tile type"),
+        }
+    }
+}
+
 impl TileType {
     fn as_leader(&self) -> Leader {
         match self {
@@ -1994,6 +2125,7 @@ pub enum Player {
     Player2,
 }
 
+#[repr(u8)]
 #[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Leader {
     None,
@@ -2001,6 +2133,19 @@ pub enum Leader {
     Green,
     Red,
     Black,
+}
+
+impl From<u8> for Leader {
+    fn from(val: u8) -> Self {
+        match val {
+            0b0000 => Leader::None,
+            0b0001 => Leader::Blue,
+            0b0010 => Leader::Green,
+            0b0100 => Leader::Red,
+            0b1000 => Leader::Black,
+            _ => panic!("invalid leader"),
+        }
+    }
 }
 
 impl Leader {
@@ -2261,6 +2406,7 @@ mod tests {
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 6);
 
         // player 2 successfully adds 1 support
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
         let ret = game.process(Action::AddSupport {
             tile_type: TileType::Red,
             n: 1,

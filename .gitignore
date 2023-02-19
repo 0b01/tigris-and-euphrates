@@ -3,3 +3,4 @@
 .DS_Store
 assets/*.kra~
 assets/*.png~
+.env
