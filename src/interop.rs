@@ -1,35 +1,14 @@
-use numpy::ndarray::{Array3};
-use numpy::{IntoPyArray, PyArray3};
+use numpy::ndarray::{Array3, Array1};
+use numpy::{IntoPyArray, PyArray3, PyArray1};
 use pyo3::{pymodule, types::PyModule, PyResult, Python};
-use crate::game::{TnEGame, Action, Pos, W, H, Tiles, Movement, Leader, TileType, Player, Monument, RIVER, Bitboard};
+use crate::game::{TnEGame, Action, Pos, W, H, Movement, Leader, TileType, Player, Monument, RIVER, Bitboard, MonumentType, GameState};
 use crate::pos;
 
 use pyo3::prelude::*;
 
-fn from_action_vector(action: u8, from: Pos, to: Pos, tiles: Tiles, ty: u8) -> Action {
-    let action = match action {
-        0 => Action::WarSelectLeader { leader: ty.into() },
-        1 => Action::AddSupport { tile_type: ty.into(), n: tiles.count(ty.into()) },
-        2 => Action::BuildMonument { monument_type: ty.into(), pos_top_left: to },
-        3 => Action::PlaceTile { to, tile_type: ty.into() },
-        4 => Action::TakeTreasure(to),
-        5 => Action::MoveLeader { movement: Movement::Place(to), leader: ty.into()},
-        6 => Action::MoveLeader { movement: Movement::Move { from, to }, leader: ty.into()},
-        7 => Action::MoveLeader { movement: Movement::Withdraw(to), leader: ty.into()},
-        8 => Action::ReplaceTile(tiles),
-        9 => Action::PlaceCatastrophe { to },
-        10 => Action::Pass,
-        _ => panic!(),
-    };
-
-    dbg!(&action);
-
-    action
-}
-
-#[deny(unused)]
+#[warn(unused)]
 #[repr(usize)]
-pub enum Plane {
+enum Plane {
     TileRed,
     TileGreen,
     TileBlue,
@@ -80,17 +59,27 @@ pub enum Plane {
     AllOnes,
 
     LastLeaderMovement0,
+    #[allow(unused)]
     LastLeaderMovement1,
+    #[allow(unused)]
     LastLeaderMovement2,
+    #[allow(unused)]
     LastLeaderMovement3,
+    #[allow(unused)]
     LastLeaderMovement4,
+    #[allow(unused)]
     LastLeaderMovement5,
 
     LastTilePlacement0,
+    #[allow(unused)]
     LastTilePlacement1,
+    #[allow(unused)]
     LastTilePlacement2,
+    #[allow(unused)]
     LastTilePlacement3,
+    #[allow(unused)]
     LastTilePlacement4,
+    #[allow(unused)]
     LastTilePlacement5,
 
     Turn,
@@ -111,7 +100,20 @@ impl TnEGame {
     const H: usize = H;
 
     #[classattr]
-    const NACTIONS: usize = std::mem::variant_count::<Action>();
+    const N_CHANNELS: usize = Plane::Last as usize - 1;
+
+    #[classattr]
+    const N_ACTIONS: usize = 11 * 16 * 11 + 6 + 7 + 4 + 1;
+
+    #[pyo3(name="invalid_actions")]
+    fn invalid_actions<'py>(&self, py: Python<'py>) -> &'py PyArray1<u8> {
+        let mut z = Array1::ones(Self::N_ACTIONS);
+        for m in self.next_action().generate_moves(self) {
+            let i: usize = m.into();
+            z[i] = 0;
+        }
+        z.into_pyarray(py)
+    }
 
     #[pyo3(name="state")]
     fn state<'py>(&self, py: Python<'py>) -> &'py PyArray3<f64> {
@@ -217,32 +219,14 @@ impl TnEGame {
         z.into_pyarray(py)
     }
 
+    /// Process an action
     #[pyo3(name="process")]
-    /// Process an action, the args are multiuse and depend on the action
     fn process_action_vec(&mut self,
-        action: u8,
-
-        from_x: u8,
-        from_y: u8,
-        to_x: u8,
-        to_y: u8,
-
-        red: u8,
-        green: u8,
-        blue: u8,
-        black: u8,
-
-        leader: u8,
-    ) -> pyo3::PyResult<()> {
-        let action = from_action_vector(
-            action,
-            pos!(from_x, from_y),
-            pos!(to_x, to_y),
-            Tiles{red, green, blue, black},
-            leader,
-        );
-        self.process(action).unwrap();
-        Ok(())
+        n: usize,
+    ) -> bool {
+        let action = n.into();
+        println!("{}", n);
+        self.process(action).is_ok()
     }
 }
 

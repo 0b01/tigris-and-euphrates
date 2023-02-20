@@ -475,7 +475,7 @@ async fn run(mut game: TnEGame, self_play: bool) {
                     if is_mouse_button_pressed(MouseButton::Left)
                         && in_tile(mouse_logical, grid_to_logical(pos))
                     {
-                        process(&mut game, Action::WarSelectLeader { leader });
+                        process(&mut game, Action::WarSelectLeader(leader));
                     }
                 }
             }
@@ -515,8 +515,8 @@ async fn run(mut game: TnEGame, self_play: bool) {
             None
         };
         if let Some(n) = n {
-            if let PlayerAction::AddSupport(tile_type) = game.next_action() {
-                process(&mut game, Action::AddSupport { tile_type, n });
+            if let PlayerAction::AddSupport(_tile_type) = game.next_action() {
+                process(&mut game, Action::AddSupport(n));
             }
         }
 
@@ -528,9 +528,9 @@ async fn run(mut game: TnEGame, self_play: bool) {
                     let pos = logical_to_grid(mouse_logical);
 
                     let action = match holding_type {
-                        Ok(tile_type) => Action::PlaceTile { to: pos, tile_type },
-                        Err(leader) => Action::MoveLeader {
-                            movement: Movement::Place(pos),
+                        Ok(tile_type) => Action::PlaceTile { pos, tile_type },
+                        Err(leader) => Action::PlaceLeader {
+                            pos: pos,
                             leader,
                         },
                     };
@@ -565,11 +565,11 @@ async fn run(mut game: TnEGame, self_play: bool) {
 
                 let action = match holding_type {
                     Ok(tile_type) => Action::PlaceTile {
-                        to: pos!(grid_y as u8, grid_x as u8),
+                        pos: pos!(grid_y as u8, grid_x as u8),
                         tile_type,
                     },
-                    Err(leader) => Action::MoveLeader {
-                        movement: Movement::Place(pos!(grid_y as u8, grid_x as u8)),
+                    Err(leader) => Action::PlaceLeader {
+                        pos: pos!(grid_y as u8, grid_x as u8),
                         leader,
                     },
                 };

@@ -45,7 +45,7 @@ fn main() {
 pub fn view_custom() {
     let mut game = HistoryBuffer::new();
     game.process(Action::PlaceTile {
-        to: pos!(0, 0),
+        pos: pos!(0, 0),
         tile_type: TileType::Red,
     }).unwrap();
     visualizer::history_viewer(game.history);

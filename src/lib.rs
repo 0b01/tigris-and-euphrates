@@ -1,5 +1,3 @@
-#![feature(variant_count)]
-
 pub mod game;
 pub mod history;
 pub mod solver;

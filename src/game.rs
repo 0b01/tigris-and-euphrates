@@ -1,5 +1,3 @@
-
-use packed_struct::prelude::*;
 use primitive_types::U256;
 use serde::{Deserialize, Serialize};
 use once_cell::sync::Lazy;
@@ -13,7 +11,7 @@ macro_rules! pos {
     };
 
     ($x:expr, $y:expr) => {
-        Pos { x: $x, y: $y }
+        Pos { x: $x as u8, y: $y as u8 }
     };
 }
 
@@ -101,16 +99,8 @@ impl<const N: usize> MoveHistory<N> {
         self.last_moved_leaders.remove(0);
 
         let (t, l) = match action {
-            Action::PlaceTile { to, .. } => {
-                (Some(*to), None)
-            }
-            Action::MoveLeader { movement, .. } => {
-                match movement {
-                    Movement::Place(to) => (None, Some(*to)),
-                    Movement::Move { to, .. } => (None, Some(*to)),
-                    Movement::Withdraw(_) => (None, None),
-                }
-            }
+            Action::PlaceTile { pos: to, .. } => (Some(*to), None),
+            Action::PlaceLeader { pos, .. } => (None, Some(*pos)),
             _ => (None, None),
         };
 
@@ -258,14 +248,15 @@ impl TnEGame {
 
         let is_valid = match (state, action) {
             (GameState::Normal, Action::PlaceTile { .. })
-            | (GameState::Normal, Action::MoveLeader { .. })
+            | (GameState::Normal, Action::PlaceLeader { .. })
+            | (GameState::Normal, Action::WithdrawLeader(_))
             | (GameState::Normal, Action::ReplaceTile(_))
-            | (GameState::Normal, Action::PlaceCatastrophe { .. })
+            | (GameState::Normal, Action::PlaceCatastrophe(_))
             | (GameState::Normal, Action::Pass)
             | (GameState::TakeTreasure, Action::TakeTreasure { .. })
-            | (GameState::WarSelectLeader, Action::WarSelectLeader { .. })
-            | (GameState::BuildMonument, Action::BuildMonument { .. })
-            | (GameState::AddSupport, Action::AddSupport { .. }) => true,
+            | (GameState::WarSelectLeader, Action::WarSelectLeader(_))
+            | (GameState::BuildMonument, Action::BuildMonument(_))
+            | (GameState::AddSupport, Action::AddSupport(_)) => true,
             _ => false,
         };
 
@@ -279,7 +270,10 @@ impl TnEGame {
                     return Err(Error::NoTreasure);
                 }
             }
-            Action::AddSupport { tile_type, n } => {
+            Action::AddSupport(n) => {
+                let PlayerAction::AddSupport(tile_type) = self.next_action() else {
+                    unreachable!()
+                };
                 // we must be in a conflict
                 let conflict = match (
                     self.internal_conflict.as_ref(),
@@ -318,7 +312,7 @@ impl TnEGame {
                     return Err(Error::NotEnoughTiles);
                 }
             }
-            Action::WarSelectLeader { leader } => {
+            Action::WarSelectLeader(leader) => {
                 // we must be in an external conflict
                 let Some(conflicts) = &self.external_conflict else {
                     return Err(Error::NoExternalConflict);
@@ -337,7 +331,7 @@ impl TnEGame {
                     return Err(Error::LeadersDisconnected);
                 }
             }
-            Action::PlaceCatastrophe { to } => {
+            Action::PlaceCatastrophe(to) => {
                 if curr_player_state.num_catastrophes == 0 {
                     return Err(Error::NoCatastrophes);
                 }
@@ -353,7 +347,7 @@ impl TnEGame {
                     return Err(Error::CannotPlaceOverTreasure);
                 }
             }
-            Action::PlaceTile { to, tile_type } => {
+            Action::PlaceTile { pos: to, tile_type } => {
                 if self.board.get_tile_type(to) != TileType::Empty {
                     return Err(Error::CannotPlaceTileOverTile);
                 }
@@ -379,35 +373,20 @@ impl TnEGame {
                     return Err(Error::CannotJoinThreeKingdoms);
                 }
             }
-            Action::MoveLeader {
-                movement: ty,
-                leader,
-            } => match ty {
-                Movement::Place(to) => {
-                    if curr_player_state.get_leader(leader).is_some() {
-                        return Err(Error::LeaderAlreadyPlaced);
-                    }
-                    self.check_leader_placement(to, kingdom_count)?;
+            Action::PlaceLeader {
+                pos,
+                ..
+            } => {
+                if self.board.get_leader(pos) != Leader::None {
+                    return Err(Error::CannotPlaceOverLeader);
                 }
-                Movement::Move { from, to } => {
-                    if self.board.get_leader(from) != leader {
-                        return Err(Error::CannotMoveOtherLeader);
-                    }
-                    if self.board.get_player(from) != current_player {
-                        return Err(Error::CannotMoveOtherLeader);
-                    }
-                    if self.board.get_leader(to) != Leader::None {
-                        return Err(Error::CannotPlaceOverLeader);
-                    }
-
-                    self.check_leader_placement(to, kingdom_count)?;
+                self.check_leader_placement(pos, kingdom_count)?;
+            }
+            Action::WithdrawLeader(pos) => {
+                if self.board.get_leader(pos) == Leader::None {
+                    return Err(Error::CannotWithdrawLeader);
                 }
-                Movement::Withdraw(pos) => {
-                    if self.board.get_leader(pos) != leader {
-                        return Err(Error::CannotMoveOtherLeader);
-                    }
-                }
-            },
+            }
             Action::ReplaceTile(Tiles {
                 red,
                 black,
@@ -424,10 +403,10 @@ impl TnEGame {
                 }
             }
             Action::Pass => {}
-            Action::BuildMonument {
-                monument_type,
-                pos_top_left,
-            } => {
+            Action::BuildMonument(monument_type) => {
+                let PlayerAction::BuildMonument(pos_top_left, ..) = self.next_action() else {
+                    unreachable!()
+                };
                 let pos_top_right = pos_top_left + pos!(0, 1);
                 let pos_bottom_left = pos_top_left + pos!(1, 0);
                 let pos_bottom_right = pos_top_left + pos!(1, 1);
@@ -448,15 +427,16 @@ impl TnEGame {
         &mut self,
         action: Action,
         current_player: Player,
+        current_player_action: PlayerAction,
     ) -> (Option<GameState>, Vec<(Player, PlayerAction, GameState)>) {
         let curr_player = self.players.get_mut(current_player);
         let mut extra_actions = Vec::new();
 
         let next_state = match action {
-            Action::BuildMonument {
-                monument_type,
-                pos_top_left,
-            } => {
+            Action::BuildMonument(monument_type) => {
+                let PlayerAction::BuildMonument(pos_top_left, ..) = current_player_action else {
+                    panic!();
+                };
                 let positions = [
                     pos_top_left,
                     pos_top_left.right(),
@@ -482,7 +462,7 @@ impl TnEGame {
                 curr_player.score_treasure += 1;
                 None
             }
-            Action::WarSelectLeader { leader } => {
+            Action::WarSelectLeader(leader) => {
                 assert!(self.internal_conflict.is_none());
                 let Some(conflicts) = &mut self.external_conflict else {
                     unreachable!();
@@ -496,7 +476,10 @@ impl TnEGame {
                     .push((conflict.attacker, next_action));
                 Some(GameState::AddSupport)
             }
-            Action::AddSupport { tile_type, n } => {
+            Action::AddSupport(n) => {
+                let PlayerAction::AddSupport(tile_type) = current_player_action else {
+                    unreachable!()
+                };
                 let c = match (
                     self.internal_conflict.as_mut(),
                     self.external_conflict.as_mut(),
@@ -659,7 +642,7 @@ impl TnEGame {
                     Some(GameState::AddSupport)
                 }
             }
-            Action::PlaceCatastrophe { to } => {
+            Action::PlaceCatastrophe(to) => {
                 self.board.set_catastrophe(to, true);
                 self.board.set_player(to, Player::None);
                 self.board.set_leader(to, Leader::None);
@@ -673,7 +656,7 @@ impl TnEGame {
 
                 Some(GameState::Normal)
             }
-            Action::PlaceTile { to, tile_type } => {
+            Action::PlaceTile { pos: to, tile_type } => {
                 // get kingdoms around the to-be-placed tile
                 let kingdoms = self.board.neighboring_kingdoms(to);
                 // 1. find if there's an external conflict, if it would unite kingdoms with same color leaders
@@ -775,39 +758,28 @@ impl TnEGame {
                     Some(GameState::Normal)
                 }
             }
-            Action::MoveLeader { movement, leader } => match movement {
-                Movement::Place(pos) => {
-                    let next_state = self.check_internal_conflict(pos, leader, current_player);
-                    if next_state == GameState::Normal {
-                        self.check_treasure_at(pos, &mut extra_actions);
-                    }
-
-                    self.board.set_leader(pos, leader);
-                    self.board.set_player(pos, current_player);
-                    self.players
-                        .get_mut(current_player)
-                        .set_leader(leader, Some(pos));
-                    Some(next_state)
-                }
-                Movement::Move { from, to } => {
-                    let next_state = self.check_internal_conflict(to, leader, current_player);
-                    if next_state == GameState::Normal {
-                        self.check_treasure_at(to, &mut extra_actions);
-                    }
-
-                    self.players
-                        .get_mut(current_player)
-                        .set_leader(leader, Some(to));
+            Action::PlaceLeader { pos, leader } => {
+                if let Some(from) = curr_player.get_leader(leader) {
                     self.board.set_leader(from, Leader::None);
                     self.board.set_player(from, Player::None);
-                    self.board.set_player(to, current_player);
-                    self.board.set_leader(to, leader);
-                    Some(next_state)
                 }
-                Movement::Withdraw(pos) => {
-                    self.evict_leader(pos);
-                    Some(GameState::Normal)
+
+                let next_state = self.check_internal_conflict(pos, leader, current_player);
+
+                if next_state == GameState::Normal {
+                    self.check_treasure_at(pos, &mut extra_actions);
                 }
+
+                self.board.set_leader(pos, leader);
+                self.board.set_player(pos, current_player);
+                self.players
+                    .get_mut(current_player)
+                    .set_leader(leader, Some(pos));
+                Some(next_state)
+            }
+            Action::WithdrawLeader(pos) => {
+                self.evict_leader(pos);
+                Some(GameState::Normal)
             },
             Action::ReplaceTile(
                 t @ Tiles {
@@ -965,11 +937,11 @@ impl TnEGame {
         if current_state == GameState::Normal {
             self.move_history.record(&action);
         }
-        let (current_player, _) = self.play_action_stack.pop().unwrap();
+        let (current_player, current_player_action) = self.play_action_stack.pop().unwrap();
         if current_state == GameState::Normal {
             self.last_player_normal_action = current_player;
         }
-        let (next_state, extra_actions) = self.process_action(action, current_player);
+        let (next_state, extra_actions) = self.process_action(action, current_player, current_player_action);
         if let Some(next_state) = next_state {
             // println!("{:?} => {:?}, {action:?}", current_state, next_state);
             self.state.push(next_state);
@@ -1221,31 +1193,138 @@ impl PartialEq for Conflict {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    WarSelectLeader {
-        leader: Leader,
-    },
-    AddSupport {
-        tile_type: TileType,
-        n: u8,
-    },
-    BuildMonument {
-        monument_type: MonumentType,
-        pos_top_left: Pos,
-    },
+    WarSelectLeader(Leader),
+    AddSupport(u8),
+    BuildMonument(MonumentType),
     PlaceTile {
-        to: Pos,
+        pos: Pos,
         tile_type: TileType,
     },
     TakeTreasure(Pos),
-    MoveLeader {
-        movement: Movement,
+    PlaceLeader {
+        pos: Pos,
         leader: Leader,
     },
+    WithdrawLeader(Pos),
     ReplaceTile(Tiles),
-    PlaceCatastrophe {
-        to: Pos,
-    },
+    PlaceCatastrophe(Pos),
     Pass,
+}
+
+/// PlaceTileRed, 11 * 16
+/// PlaceTileGreen, 11 * 16
+/// PlaceTileBlue, 11 * 16
+/// PlaceTileBlack, 11 * 16
+/// PlaceLeaderRed, 11 * 16
+/// PlaceLeaderGreen, 11 * 16
+/// PlaceLeaderBlue, 11 * 16
+/// PlaceLeaderBlack, 11 * 16
+/// WithdrawLeader, 11 * 16
+/// PlaceCatastrophe, 11 * 16
+/// TakeTreasure, 11 * 16
+/// BuildMonument, 6
+/// AddSupport, 7
+/// SelectLeader, 4
+/// Pass, 1
+impl Into<usize> for Action {
+    fn into(self) -> usize {
+        match self {
+            Action::PlaceTile { pos: to, tile_type } => {
+                let i = to.x as usize * W + to.y as usize;
+                match tile_type {
+                    TileType::Red => 0 * H * W + i,
+                    TileType::Green => 1 * H * W + i,
+                    TileType::Blue => 2 * H * W + i,
+                    TileType::Black => 3 * H * W + i,
+                    _ => unreachable!(),
+                }
+            }
+            Action::PlaceLeader { pos, leader } => {
+                let i = pos.x as usize * W + pos.y as usize;
+                match leader {
+                    Leader::Red => 4 * H * W + i,
+                    Leader::Green => 5 * H * W + i,
+                    Leader::Blue => 6 * H * W + i,
+                    Leader::Black => 7 * H * W + i,
+                    _ => unreachable!(),
+                }
+            }
+            Action::WithdrawLeader(pos) => {
+                let i = pos.x as usize * W + pos.y as usize;
+                8 * H * W + i
+            }
+            Action::PlaceCatastrophe(pos) => {
+                let i = pos.x as usize * W + pos.y as usize;
+                9 * H * W + i
+            }
+            Action::TakeTreasure(pos) => {
+                let i = pos.x as usize * W + pos.y as usize;
+                10 * H * W + i
+            }
+            Action::BuildMonument(ty) => {
+                11 * H * W + (ty as usize)
+            }
+            Action::AddSupport(n) => {
+                11 * H * W + 6 + (n as usize)
+            }
+            Action::WarSelectLeader(leader) => {
+                11 * H * W + 6 + 7 + (leader as usize - 1)
+            }
+            Action::Pass => {
+                11 * H * W + 6 + 7 + 4
+            }
+            Action::ReplaceTile(_) => unreachable!(),
+        }
+    }
+}
+
+impl From<usize> for Action {
+    fn from(n: usize) -> Self {
+        let idx = n / (W * H);
+        let offset = n % (W * H);
+        let pos = pos!(offset / W, offset % W);
+        match idx {
+            0 => Action::PlaceTile { pos, tile_type: TileType::Red },
+            1 => Action::PlaceTile { pos, tile_type: TileType::Green },
+            2 => Action::PlaceTile { pos, tile_type: TileType::Blue },
+            3 => Action::PlaceTile { pos, tile_type: TileType::Black },
+            4 => Action::PlaceLeader { pos, leader: Leader::Red },
+            5 => Action::PlaceLeader { pos, leader: Leader::Green },
+            6 => Action::PlaceLeader { pos, leader: Leader::Blue },
+            7 => Action::PlaceLeader { pos, leader: Leader::Black },
+            8 => Action::WithdrawLeader(pos),
+            9 => Action::PlaceCatastrophe(pos),
+            10 => Action::TakeTreasure(pos),
+            _ => {
+                let idx = n - (W * H * 11);
+                match idx {
+                    0 => Action::BuildMonument(MonumentType::RedGreen),
+                    1 => Action::BuildMonument(MonumentType::RedBlue),
+                    2 => Action::BuildMonument(MonumentType::GreenBlue),
+                    3 => Action::BuildMonument(MonumentType::BlackRed),
+                    4 => Action::BuildMonument(MonumentType::BlackGreen),
+                    5 => Action::BuildMonument(MonumentType::BlackBlue),
+
+                    6 => Action::AddSupport(idx as u8 - 6),
+                    7 => Action::AddSupport(idx as u8 - 6),
+                    8 => Action::AddSupport(idx as u8 - 6),
+                    9 => Action::AddSupport(idx as u8 - 6),
+                    10 => Action::AddSupport(idx as u8 - 6),
+                    11 => Action::AddSupport(idx as u8 - 6),
+                    12 => Action::AddSupport(idx as u8 - 6),
+
+                    13 => Action::WarSelectLeader(Leader::Blue),
+                    14 => Action::WarSelectLeader(Leader::Green),
+                    15 => Action::WarSelectLeader(Leader::Red),
+                    16 => Action::WarSelectLeader(Leader::Black),
+
+                    17 => Action::Pass,
+
+                    _ => panic!(),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1342,7 +1421,6 @@ impl Tiles {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Movement {
     Place(Pos),
-    Move { from: Pos, to: Pos },
     Withdraw(Pos),
 }
 
@@ -2215,7 +2293,8 @@ impl Board {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MonumentType {
     RedGreen,
     RedBlue,
@@ -2223,20 +2302,6 @@ pub enum MonumentType {
     BlackRed,
     BlackGreen,
     BlackBlue,
-}
-
-impl From<u8> for MonumentType {
-    fn from(val: u8) -> Self {
-        match val {
-            0b0011 => MonumentType::GreenBlue,
-            0b0101 => MonumentType::RedBlue,
-            0b0110 => MonumentType::RedGreen,
-            0b1001 => MonumentType::BlackBlue,
-            0b1010 => MonumentType::BlackGreen,
-            0b1100 => MonumentType::BlackRed,
-            _ => panic!("invalid monument type"),
-        }
-    }
 }
 
 impl MonumentType {
@@ -2273,7 +2338,7 @@ impl MonumentType {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TileType {
     Empty,
     Blue,
@@ -2307,7 +2372,7 @@ impl TileType {
     }
 }
 
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Player {
     None,
     Player1,
@@ -2315,7 +2380,7 @@ pub enum Player {
 }
 
 #[repr(u8)]
-#[derive(PrimitiveEnum_u8, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Leader {
     None,
     Blue,
@@ -2379,6 +2444,7 @@ pub enum Error {
     LeaderAlreadyPlaced,
     MonumentNot2x2,
     CannotPlaceCatastropheOnMonument,
+    CannotWithdrawLeader,
 }
 
 #[cfg(test)]
@@ -2417,8 +2483,8 @@ mod tests {
         let mut game = TnEGame::new();
         assert_eq!(game.play_action_stack, vec![p1!(), p1!()]);
         assert_eq!(game.players.get_mut(Player::Player1).hand_sum(), 6);
-        let ret = game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 0)),
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(0, 0),
             leader: Leader::Black,
         });
         assert_eq!(
@@ -2430,16 +2496,16 @@ mod tests {
     #[test]
     fn leader_must_be_placed_next_to_temples_ok() {
         let mut game = TnEGame::new();
-        let ret = game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 1)),
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
             leader: Leader::Black,
         });
         assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Normal));
         assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::Black);
         assert_eq!(game.board.get_player(pos!(0, 1)), Player::Player1);
 
-        let ret = game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Red,
         });
         assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Normal));
@@ -2515,13 +2581,13 @@ mod tests {
         let mut game = TnEGame::new();
 
         // player 1 puts down black and red leaders
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 1)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
             leader: Leader::Black,
         })
         .unwrap();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Red,
         })
         .unwrap();
@@ -2531,8 +2597,8 @@ mod tests {
 
         // player 2 puts down red leader
         assert_eq!(game.play_action_stack, vec![p2!(), p2!()]);
-        let ret = game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(2, 1)),
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(2, 1),
             leader: Leader::Red,
         });
         assert_eq!(
@@ -2563,8 +2629,8 @@ mod tests {
         );
 
         // player 2 can only add red support, trying to do anything else is an error
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(2, 1)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(2, 1),
             leader: Leader::Red,
         })
         .unwrap_err();
@@ -2575,19 +2641,13 @@ mod tests {
             vec![p2!(), p2!(PlayerAction::AddSupport(TileType::Red))]
         );
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Black);
-        let ret = game.process(Action::AddSupport {
-            tile_type: TileType::Red,
-            n: 6,
-        });
+        let ret = game.process(Action::AddSupport(6));
         assert_eq!(ret.unwrap_err(), Error::NotEnoughTiles);
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 6);
 
         // player 2 successfully adds 1 support
         ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
-        let ret = game.process(Action::AddSupport {
-            tile_type: TileType::Red,
-            n: 1,
-        });
+        let ret = game.process(Action::AddSupport(1));
         assert_eq!(
             game.play_action_stack,
             vec![p2!(), p1!(PlayerAction::AddSupport(TileType::Red))]
@@ -2604,10 +2664,7 @@ mod tests {
 
         // player 1 successfully adds 1 support
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
-        let ret = game.process(Action::AddSupport {
-            tile_type: TileType::Red,
-            n: 1,
-        });
+        let ret = game.process(Action::AddSupport(1));
         assert_eq!(game.play_action_stack, vec![p2!()]);
         assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Normal));
         assert_eq!(game.players.get_mut(Player::Player2).hand_sum(), 5);
@@ -2640,14 +2697,14 @@ mod tests {
     #[test]
     fn place_tile() {
         let mut game = TnEGame::new();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 1)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
             leader: Leader::Red,
         })
         .unwrap();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         let ret = game.process(Action::PlaceTile {
-            to: pos!(0, 0),
+            pos: pos!(0, 0),
             tile_type: TileType::Red,
         });
         assert_eq!(ret.unwrap(), (Player::Player2, PlayerAction::Normal));
@@ -2662,7 +2719,7 @@ mod tests {
         let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         let ret = game.process(Action::PlaceTile {
-            to: pos!(0, 0),
+            pos: pos!(0, 0),
             tile_type: TileType::Red,
         });
         assert_eq!(ret.unwrap(), (Player::Player1, PlayerAction::Normal));
@@ -2675,26 +2732,26 @@ mod tests {
     #[test]
     fn place_tile_score_enemy_leader() {
         let mut game = TnEGame::new();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 1)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
             leader: Leader::Red,
         })
         .unwrap();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Black,
         })
         .unwrap();
         assert_eq!(game.play_action_stack, vec![p2!(), p2!()]);
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Red);
         game.process(Action::PlaceTile {
-            to: pos!(0, 0),
+            pos: pos!(0, 0),
             tile_type: TileType::Red,
         })
         .unwrap();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Black);
         game.process(Action::PlaceTile {
-            to: pos!(2, 0),
+            pos: pos!(2, 0),
             tile_type: TileType::Black,
         })
         .unwrap();
@@ -2711,13 +2768,13 @@ mod tests {
 
         // player 1 place a leader and a tile
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Red,
         })
         .unwrap();
         game.process(Action::PlaceTile {
-            to: pos!(0, 2),
+            pos: pos!(0, 2),
             tile_type: TileType::Red,
         })
         .unwrap();
@@ -2725,8 +2782,8 @@ mod tests {
         assert_eq!(game.players.get_mut(Player::Player1).score_red, 0);
 
         // player 2 places a leader
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 3)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 3),
             leader: Leader::Red,
         })
         .unwrap();
@@ -2735,7 +2792,7 @@ mod tests {
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Red);
         let ret = game
             .process(Action::PlaceTile {
-                to: pos!(0, 1),
+                pos: pos!(0, 1),
                 tile_type: TileType::Red,
             })
             .unwrap();
@@ -2783,9 +2840,7 @@ mod tests {
         );
 
         // player 2 (attacker) selects leader
-        game.process(Action::WarSelectLeader {
-            leader: Leader::Red,
-        })
+        game.process(Action::WarSelectLeader(Leader::Red))
         .unwrap();
         assert_eq!(
             game.play_action_stack,
@@ -2794,10 +2849,7 @@ mod tests {
 
         // adds support
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Red);
-        game.process(Action::AddSupport {
-            tile_type: TileType::Red,
-            n: 1,
-        })
+        game.process(Action::AddSupport(1))
         .unwrap();
         assert_eq!(
             game.external_conflict.as_ref().unwrap().conflicts[0].attacker_support,
@@ -2823,10 +2875,7 @@ mod tests {
         // player 1 (defender) adds support
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         let ret = game
-            .process(Action::AddSupport {
-                tile_type: TileType::Red,
-                n: 1,
-            })
+            .process(Action::AddSupport(1))
             .unwrap();
         assert_eq!(game.play_action_stack, vec![p1!(), p1!()]);
         assert_eq!(ret, (Player::Player1, PlayerAction::Normal));
@@ -2836,27 +2885,27 @@ mod tests {
     fn place_tile_does_not_trigger_external_conflict() {
         let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Red,
         })
         .unwrap();
         game.process(Action::PlaceTile {
-            to: pos!(0, 2),
+            pos: pos!(0, 2),
             tile_type: TileType::Red,
         })
         .unwrap();
         assert_eq!(game.board.get_tile_type(pos!(0, 2)), TileType::Red);
         assert_eq!(game.players.get_mut(Player::Player1).score_red, 0);
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 3)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 3),
             leader: Leader::Black,
         })
         .unwrap();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Red);
         let ret = game
             .process(Action::PlaceTile {
-                to: pos!(0, 1),
+                pos: pos!(0, 1),
                 tile_type: TileType::Red,
             })
             .unwrap();
@@ -2868,8 +2917,8 @@ mod tests {
     #[test]
     fn place_next_to_red() {
         let mut game = TnEGame::new();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 1)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
             leader: Leader::Green,
         })
         .unwrap();
@@ -2877,7 +2926,7 @@ mod tests {
         assert_eq!(ret.iter().filter(|i| i.x < 5 && i.y < 5).count(), 3);
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Green);
         game.process(Action::PlaceTile {
-            to: pos!(1, 0),
+            pos: pos!(1, 0),
             tile_type: TileType::Green,
         })
         .unwrap();
@@ -2887,8 +2936,8 @@ mod tests {
     #[test]
     fn find_kingdom_adj() {
         let mut game = TnEGame::new();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 2)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 2),
             leader: Leader::Green,
         })
         .unwrap();
@@ -2911,50 +2960,42 @@ mod tests {
     fn external_conflict_resolution() {
         let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Black,
         })
         .unwrap();
         game.process(Action::PlaceTile {
-            to: pos!(1, 3),
+            pos: pos!(1, 3),
             tile_type: TileType::Red,
         })
         .unwrap();
 
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player2), TileType::Black);
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(0, 3)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 3),
             leader: Leader::Black,
         })
         .unwrap();
         game.process(Action::PlaceTile {
-            to: pos!(0, 2),
+            pos: pos!(0, 2),
             tile_type: TileType::Black,
         })
         .unwrap();
 
         game.players.get_mut(Player::Player1).hand_black = 2;
         game.process(Action::PlaceTile {
-            to: pos!(1, 2),
+            pos: pos!(1, 2),
             tile_type: TileType::Black,
         })
         .unwrap();
-        game.process(Action::WarSelectLeader {
-            leader: Leader::Black,
-        })
+        game.process(Action::WarSelectLeader(Leader::Black))
         .unwrap();
         game.players.get_mut(Player::Player1).hand_black = 2;
-        game.process(Action::AddSupport {
-            tile_type: TileType::Black,
-            n: 2,
-        })
+        game.process(Action::AddSupport(2))
         .unwrap();
 
-        game.process(Action::AddSupport {
-            tile_type: TileType::Black,
-            n: 0,
-        })
+        game.process(Action::AddSupport(0))
         .unwrap();
         assert_eq!(game.board.get_tile_type(pos!(0, 2)), TileType::Empty);
         assert_eq!(game.next_state(), GameState::Normal);
@@ -2966,20 +3007,20 @@ mod tests {
 
         ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
         game.process(Action::PlaceTile {
-            to: pos!(0, 0),
+            pos: pos!(0, 0),
             tile_type: TileType::Red,
         })
         .unwrap();
         ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
         game.process(Action::PlaceTile {
-            to: pos!(0, 1),
+            pos: pos!(0, 1),
             tile_type: TileType::Red,
         })
         .unwrap();
 
         ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
         game.process(Action::PlaceTile {
-            to: pos!(1, 0),
+            pos: pos!(1, 0),
             tile_type: TileType::Red,
         })
         .unwrap();
@@ -2997,21 +3038,18 @@ mod tests {
                 )
             )
         );
-        game.process(Action::BuildMonument {
-            pos_top_left: pos!(0, 0),
-            monument_type: MonumentType::RedGreen,
-        })
+        game.process(Action::BuildMonument(MonumentType::RedGreen))
         .unwrap();
 
         ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
         game.process(Action::PlaceTile {
-            to: pos!(1, 2),
+            pos: pos!(1, 2),
             tile_type: TileType::Red,
         })
         .unwrap();
 
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(2, 2)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(2, 2),
             leader: Leader::Green,
         })
         .unwrap();
@@ -3037,13 +3075,13 @@ mod tests {
     fn test_bug_leaders_disconnected() {
         let mut game = TnEGame::new();
 
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Red,
         }).unwrap();
-        game.process(Action::PlaceTile { to: pos!(0, 3), tile_type: TileType::Red }).unwrap();
+        game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red }).unwrap();
 
-        game.process(Action::MoveLeader { movement: Movement::Place(pos!(1, 3)), leader: Leader::Red }).unwrap();
+        game.process(Action::PlaceLeader { pos: pos!(1, 3), leader: Leader::Red }).unwrap();
         let count = game.board.nearby_kingdom_count();
         assert_eq!(count[1][2], 2);
     }
@@ -3051,8 +3089,8 @@ mod tests {
     #[test]
     fn test_find_kingdom() {
         let mut game = TnEGame::new();
-        game.process(Action::MoveLeader {
-            movement: Movement::Place(pos!(1, 0)),
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
             leader: Leader::Red,
         }).unwrap();
 
@@ -3068,5 +3106,18 @@ mod tests {
         let mut bb = Bitboard::new();
         bb.set(pos!(0, 0));
         assert!(bb.get(pos!(0, 0)));
+    }
+
+    #[test]
+    fn test_game_action_usize() {
+        for i in 0..(11 * 16 * 11 + 6 + 7 + 4 + 1) {
+            let action: Action = i.into();
+            let ret: usize = action.into();
+            assert_eq!(ret, i, "action: {:?}", action);
+        }
+
+        let action: Action = 124.into();
+        dbg!(action);
+
     }
 }

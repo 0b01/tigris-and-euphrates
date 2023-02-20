@@ -10,7 +10,6 @@ glam = "0.22.0"
 image = "0.24.5"
 macroquad = "0.3.25"
 minimax = { version = "0.4.0", path = "./minimax-rs" }
-packed_struct = "0.10.1"
 rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
