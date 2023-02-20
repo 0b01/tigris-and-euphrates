@@ -19,15 +19,12 @@ class TnE(Enviroment):
     who_play: chex.Array
     count: chex.Array
     terminated: chex.Array
-    winner: chex.Array
 
     def __init__(self):
         super().__init__()
         self.reset()
-        # self.winner_checker = Connect2WinChecker()
         self.game = TnEGame()
         self.terminated = jnp.array(0, dtype=jnp.bool_)
-        self.winner = jnp.array(0, dtype=jnp.int32)
 
     def num_actions(self) -> int:
         return TnEGame.N_ACTIONS
@@ -38,9 +35,7 @@ class TnE(Enviroment):
     def reset(self):
         self.game = TnEGame()
         self.who_play = jnp.array(1, dtype=jnp.int32)
-        self.count = jnp.array(0, dtype=jnp.int32)
         self.terminated = jnp.array(0, dtype=jnp.bool_)
-        self.winner = jnp.array(0, dtype=jnp.int32)
 
     @pax.pure
     def step(self, action: chex.Array) -> Tuple["TnE", chex.Array]:
@@ -50,25 +45,19 @@ class TnE(Enviroment):
         """
         # get a true / false value for processing this action
 
-        shape = jax.ShapeDtypeStruct(shape=(), dtype=jnp.bool_) # a boolean value
+        shape = jax.ShapeDtypeStruct(shape=(3,), dtype=jnp.float32)
         def _process(action):
-            return jnp.array(self.game.process(action))
+            ret = jnp.array(self.game.process(action))
+            if ret[0]:
+                print(ret)
+            return ret
 
-        is_valid = jax.pure_callback(_process, shape, action, vectorized=False)
-        reward = is_valid
+        ret = jax.pure_callback(_process, shape, action, vectorized=False)
+        success, reward, flip = ret[0], ret[1], ret[2]
+        self.who_play = jnp.where(flip, -self.who_play, self.who_play)
+        self.terminated = jnp.logical_or(self.terminated, reward != 0.0)
+        reward = jnp.where(success, reward, -1.0) * self.who_play
         return self, reward
-        # invalid_move = self.board[action] != 0
-        # board_ = self.board.at[action].set(self.who_play)
-        # self.board = select_tree(self.terminated, self.board, board_)
-        # # self.winner = self.winner_checker(self.board)
-        # reward = self.winner * self.who_play
-        # self.who_play = -self.who_play
-        # self.count = self.count + 1
-        # self.terminated = jnp.logical_or(self.terminated, reward != 0)
-        # self.terminated = jnp.logical_or(self.terminated, self.count >= 4)
-        # self.terminated = jnp.logical_or(self.terminated, invalid_move)
-        # reward = jnp.where(invalid_move, -1.0, reward)
-        # return self, reward
 
     def render(self) -> None:
         """Render the game on screen."""
@@ -89,13 +78,14 @@ class TnE(Enviroment):
 
     def canonical_observation(self) -> chex.Array:
         np_array = self.game.state()
-        return jnp.array(np_array, dtype=jnp.float32)
+        np_array = jnp.array(np_array, dtype=jnp.float32)
+        return np_array
 
     def is_terminated(self):
         return self.terminated
 
     def max_num_steps(self) -> int:
-        return 4
+        return 1000
 
     def symmetries(self, state, action_weights):
         return [(state, action_weights), (np.flip(state), np.flip(action_weights))]

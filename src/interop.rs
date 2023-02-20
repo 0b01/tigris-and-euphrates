@@ -1,5 +1,6 @@
 use numpy::ndarray::{Array3, Array1};
 use numpy::{IntoPyArray, PyArray3, PyArray1};
+use pyo3::types::PyTuple;
 use pyo3::{pymodule, types::PyModule, PyResult, Python};
 use crate::game::{TnEGame, Action, Pos, W, H, Movement, Leader, TileType, Player, Monument, RIVER, Bitboard, MonumentType, GameState};
 use crate::pos;
@@ -18,7 +19,7 @@ enum Plane {
     P1GreenLeader,
     P1BlueLeader,
     P1BlackLeader,
-    
+
     P2RedLeader,
     P2GreenLeader,
     P2BlueLeader,
@@ -221,12 +222,34 @@ impl TnEGame {
 
     /// Process an action
     #[pyo3(name="process")]
-    fn process_action_vec(&mut self,
+    fn process_action_vec<'py>(&mut self,
+        py: Python<'py>,
         n: usize,
-    ) -> bool {
+    ) -> &'py PyTuple {
         let action = n.into();
-        println!("{}", n);
-        self.process(action).is_ok()
+        // dbg!(action);
+        let curr_player = self.next_player();
+        let success = self.process(action).is_ok();
+        let next_player = self.next_player();
+
+        let flip = curr_player != next_player;
+
+        let game_over = self.state.is_empty();
+        let reward: f32 = if game_over {
+            match self.winner() {
+                Player::Player1 => 1.,
+                Player::Player2 => -1.,
+                Player::None => 0.,
+            }
+        } else {
+            0.
+        };
+
+        return PyTuple::new(py, vec![
+            (success as u8 as f32),
+            reward,
+            (flip as u8 as f32),
+        ]);
     }
 }
 

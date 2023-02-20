@@ -25,7 +25,7 @@ def recurrent_fn(params, rng_key: chex.Array, action: chex.Array, embedding):
     terminated = env.is_terminated()
     assert value.shape == terminated.shape
     value = jnp.where(terminated, 0.0, value)
-    assert discount.shape == terminated.shape
+    chex.assert_equal_shape([discount, terminated])
     discount = jnp.where(terminated, 0.0, discount)
     recurrent_fn_output = mctx.RecurrentFnOutput(
         reward=reward,

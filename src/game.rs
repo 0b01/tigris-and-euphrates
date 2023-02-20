@@ -3120,4 +3120,16 @@ mod tests {
         dbg!(action);
 
     }
+
+    #[test]
+    fn test_generate_move() {
+        let mut game = TnEGame::new();
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        }).unwrap();
+        game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red }).unwrap();
+        let moves = game.next_action().generate_moves(&game);
+        dbg!(moves);
+    }
 }
