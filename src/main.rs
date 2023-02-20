@@ -24,17 +24,21 @@ use crate::{
 pub mod game;
 mod history;
 mod solver;
+#[cfg(feature = "game")]
 mod visualizer;
 
 fn main() {
     let arg = std::env::args().nth(1).expect("no argument");
 
     match arg.as_str() {
+        #[cfg(feature = "game")]
         "play" => visualizer::play(TnEGame::new()),
+        #[cfg(feature = "game")]
         "view" => {
             let path = std::env::args().nth(2).expect("no path");
             view_history_json(&path);
         }
+        #[cfg(feature = "game")]
         "view_custom" => view_custom(),
         "test" => test_play(),
         "perft" => test_perft(),
@@ -42,6 +46,7 @@ fn main() {
     }
 }
 
+#[cfg(feature = "game")]
 pub fn view_custom() {
     let mut game = HistoryBuffer::new();
     game.process(Action::PlaceTile {
@@ -51,6 +56,7 @@ pub fn view_custom() {
     visualizer::history_viewer(game.history);
 }
 
+#[cfg(feature = "game")]
 pub fn view_history_json(path: &str) {
     let buf = HistoryBuffer::load(path).unwrap();
     visualizer::history_viewer(buf.history);

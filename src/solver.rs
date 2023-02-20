@@ -1,4 +1,4 @@
-use crate::{game::{Action, Leader, Movement, Player, PlayerAction, TnEGame, H, W, TileType, Pos, RIVER}, visualizer, pos};
+use crate::{game::{Action, Leader, Player, PlayerAction, TnEGame, H, W, TileType, Pos, RIVER}, pos};
 use minimax::Zobrist;
 pub struct TigrisAndEuphrates;
 
