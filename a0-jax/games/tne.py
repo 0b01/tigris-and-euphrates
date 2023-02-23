@@ -48,14 +48,15 @@ class TnE(Enviroment):
         shape = jax.ShapeDtypeStruct(shape=(3,), dtype=jnp.float32)
         def _process(action):
             ret = jnp.array(self.game.process(action))
-            if ret[0]:
-                print(ret)
+            # if ret[0]:
+            #     print(ret)
             return ret
 
         ret = jax.pure_callback(_process, shape, action, vectorized=False)
         success, reward, flip = ret[0], ret[1], ret[2]
         self.who_play = jnp.where(flip, -self.who_play, self.who_play)
         self.terminated = jnp.logical_or(self.terminated, reward != 0.0)
+        self.terminated = jnp.logical_or(self.terminated, -success)
         reward = jnp.where(success, reward, -1.0) * self.who_play
         return self, reward
 
@@ -85,7 +86,7 @@ class TnE(Enviroment):
         return self.terminated
 
     def max_num_steps(self) -> int:
-        return 1000
+        return 100
 
     def symmetries(self, state, action_weights):
         return [(state, action_weights), (np.flip(state), np.flip(action_weights))]

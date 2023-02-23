@@ -131,7 +131,7 @@ def prepare_training_data(data: MoveOutput, env: Enviroment):
             if value is None:
                 value = reward[idx]
             else:
-                value = ~value
+                value = -value
             s = np.copy(state[idx])
             a = np.copy(action_weights[idx])
             for augmented_s, augmented_a in env.symmetries(s, a):
@@ -209,8 +209,8 @@ def train_step(net, optim, data: TrainingExample):
 
 
 def train(
-    # game_class="games.connect_two_game.Connect2Game",
-    # agent_class="policies.mlp_policy.MlpPolicyValueNet",
+    game_class="games.tne.TnE",
+    agent_class="policies.mlp_policy.MlpPolicyValueNet",
     selfplay_batch_size: int = 128,
     training_batch_size: int = 128,
     num_iterations: int = 100,
@@ -223,14 +223,8 @@ def train(
     lr_decay_steps: int = 100_000,
 ):
     """Train an agent by self-play."""
-    # env = import_class(game_class)()
-    # agent = import_class(agent_class)(
-    #     input_dims=env.observation().shape,
-    #     num_actions=env.num_actions(),
-    # )
-
-    env = TnE()
-    agent = ResnetPolicyValueNet(
+    env = import_class(game_class)()
+    agent = import_class(agent_class)(
         input_dims=env.observation().shape,
         num_actions=env.num_actions(),
     )
@@ -298,7 +292,8 @@ def train(
             old_agent,
             env,
             rng_key_2,
-            num_simulations_per_move=32,
+            num_simulations_per_move=1,
+            num_games=20,
         )
         # old agent is player 1
         result_2: PlayResults = agent_vs_agent_multiple_games(
@@ -306,7 +301,8 @@ def train(
             agent.eval(),
             env,
             rng_key_3,
-            num_simulations_per_move=32,
+            num_simulations_per_move=1,
+            num_games=20,
         )
         print(
             "  evaluation      {} win - {} draw - {} loss".format(
