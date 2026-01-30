@@ -280,22 +280,24 @@ impl PlayerAction {
                 // Precompute kingdom count for checking tile placements
                 let kingdom_count = state.board.nearby_kingdom_count();
                 
-                // === MOVE PRUNING ===
-                // Only consider tile placements near existing tiles/kingdoms
+                // === AGGRESSIVE MOVE PRUNING ===
+                // Only consider tile placements adjacent to existing tiles
                 // This dramatically reduces the search space
                 let existing_tiles = state.board.connectable_bitboard();
                 let adjacent_to_tiles = existing_tiles.dilate();
-                // Also consider positions 2 steps away for strategic plays
-                let near_tiles = adjacent_to_tiles.dilate();
                 
-                // find all possible tile placements (pruned to near existing tiles)
+                // Get player's leader positions for scoring priority
+                let player_state = state.players.get(current_player);
+                let connectable = state.board.connectable_bitboard();
+                
+                // find all possible tile placements (pruned to adjacent to existing tiles)
                 for x in 0..H {
                     for y in 0..W {
                         let pos = pos!(x, y);
                         
-                        // PRUNING: Skip positions not near any existing tiles
+                        // PRUNING: Skip positions not adjacent to any existing tiles
                         // (unless the board is nearly empty)
-                        if existing_tiles.count_ones() > 5 && !near_tiles.get(pos) {
+                        if existing_tiles.count_ones() > 3 && !adjacent_to_tiles.get(pos) {
                             continue;
                         }
                         
@@ -331,10 +333,10 @@ impl PlayerAction {
                 let leader_spaces_bitboard = state.board.find_empty_leader_space_next_to_red();
                 let leader_spaces: Vec<Pos> = leader_spaces_bitboard.iter().collect();
                 
-                // PRUNING: Limit leader placement options
+                // PRUNING: Limit leader placement options aggressively
                 // - Only place leaders we don't already have on board
-                // - Limit to a reasonable number of positions (best 8)
-                let max_leader_positions = 8.min(leader_spaces.len());
+                // - Limit to 5 positions for faster search
+                let max_leader_positions = 5.min(leader_spaces.len());
                 
                 for (leader, _) in sorted_leaders {
                     // Skip if we already have this leader placed
@@ -355,8 +357,8 @@ impl PlayerAction {
                 // Catastrophe placements - these are rare but strategic
                 if state.players.get(current_player).num_catastrophes > 0 {
                     let catastrophe_positions = state.board.find_catastrophe_positions();
-                    // PRUNING: Limit catastrophe options to 10 most strategic
-                    for pos in catastrophe_positions.iter().take(10) {
+                    // PRUNING: Limit catastrophe options to 5 most strategic
+                    for pos in catastrophe_positions.iter().take(5) {
                         moves.push(Action::PlaceCatastrophe(*pos));
                     }
                 }
@@ -369,17 +371,43 @@ impl PlayerAction {
                 green,
                 black,
             } => {
-                if *red {
-                    moves.push(Action::WarSelectLeader(Leader::Red));
+                // Get the external conflict to check if leaders are still connected
+                let mut any_valid = false;
+                if let Some(conflicts) = &state.external_conflict {
+                    for conflict in &conflicts.conflicts {
+                        // Only generate move if leaders are still connected
+                        if state.board.path_find(conflict.attacker_pos, conflict.defender_pos) {
+                            let leader = conflict.conflict_leader;
+                            match leader {
+                                Leader::Red if *red => {
+                                    moves.push(Action::WarSelectLeader(Leader::Red));
+                                    any_valid = true;
+                                }
+                                Leader::Blue if *blue => {
+                                    moves.push(Action::WarSelectLeader(Leader::Blue));
+                                    any_valid = true;
+                                }
+                                Leader::Green if *green => {
+                                    moves.push(Action::WarSelectLeader(Leader::Green));
+                                    any_valid = true;
+                                }
+                                Leader::Black if *black => {
+                                    moves.push(Action::WarSelectLeader(Leader::Black));
+                                    any_valid = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
-                if *blue {
-                    moves.push(Action::WarSelectLeader(Leader::Blue));
-                }
-                if *green {
-                    moves.push(Action::WarSelectLeader(Leader::Green));
-                }
-                if *black {
-                    moves.push(Action::WarSelectLeader(Leader::Black));
+                
+                // If no valid moves due to disconnection, generate all options 
+                // and let the game handle the invalid ones (they get skipped)
+                if !any_valid {
+                    if *red { moves.push(Action::WarSelectLeader(Leader::Red)); }
+                    if *blue { moves.push(Action::WarSelectLeader(Leader::Blue)); }
+                    if *green { moves.push(Action::WarSelectLeader(Leader::Green)); }
+                    if *black { moves.push(Action::WarSelectLeader(Leader::Black)); }
                 }
             }
             PlayerAction::TakeTreasure(ts) => {

@@ -1,12 +1,12 @@
 use macroquad::{miniquad::conf::Icon, prelude::*};
-use minimax::{Negamax, Strategy, Random};
+use minimax::{Negamax, Strategy, MonteCarloTreeSearch, MCTSOptions};
 
 use crate::game::{
-    Action, Leader, MonumentType, Movement, Player, PlayerAction, Pos, TileType,
+    Action, Leader, MonumentType, Player, PlayerAction, Pos, TileType,
     TnEGame, H, W,
 };
-use crate::solver::TigrisAndEuphrates;
-use crate::{pos, solver::Evaluator};
+use crate::solver::{TigrisAndEuphrates, Evaluator};
+use crate::pos;
 
 // the top left corner of the grid
 const LOGICAL_GRID_START_Y: f32 = 8.;
@@ -443,9 +443,14 @@ async fn run_history(history: Vec<TnEGame>) {
 
 async fn run(mut game: TnEGame, self_play: bool) {
     let mut ui = GameUIState::new().await;
-    // Use depth 4 for a challenging AI opponent
-    let mut ai_strategy = Negamax::new(Evaluator::default(), 4);
-    // let mut ai_strategy = Random::<TigrisAndEuphrates>::default();
+    // Use Negamax for reliable AI, or MCTS for experimentation
+    let mut ai_strategy = Negamax::new(Evaluator::default(), 5);
+    // MCTS alternative (needs more debugging):
+    // let mcts_options = MCTSOptions::default()
+    //     .with_max_rollout_depth(50)
+    //     .with_num_threads(4);
+    // let mut ai_strategy = MonteCarloTreeSearch::<TigrisAndEuphrates>::new(mcts_options);
+    // ai_strategy.set_timeout(std::time::Duration::from_secs(2));
 
     loop {
         let mouse_logical = mouse_position_logical();

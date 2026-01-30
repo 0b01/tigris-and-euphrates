@@ -215,7 +215,10 @@ pub trait RolloutPolicy {
             if let Some(new_state) = Self::G::apply(&mut state, m) {
                 state = new_state;
             }
-            sign = -sign;
+            // Only flip perspective if the player actually changes
+            if !Self::G::same_player_continues(&state) {
+                sign = -sign;
+            }
             depth -= 1;
         }
     }
@@ -232,6 +235,10 @@ impl<G: Game> RolloutPolicy for DumbRolloutPolicy<G> {
         rng: &mut SmallRng,
     ) -> <Self::G as Game>::M {
         G::generate_moves(state, moves);
+        // Handle case where no moves are available (should be handled by get_winner but just in case)
+        if moves.is_empty() {
+            panic!("No moves available but game not over - possible bug in Game implementation");
+        }
         *moves.choose(rng).unwrap()
     }
 }
@@ -344,20 +351,23 @@ impl<G: Game> MonteCarloTreeSearch<G> {
         let m = next.m.as_ref().unwrap();
         let mut new = AppliedMove::<G>::new(state, *m);
         let child_result = self.simulate(next, &mut new, force_rollout)?;
+        
+        // Check if the same player continues (don't negate if so)
+        let same_player = G::same_player_continues(&new);
 
         // Propagate up forced wins and losses.
         let result = if child_result == WIN {
             // Having a guaranteed win child makes you a loser parent.
-            LOSS
+            if same_player { WIN } else { LOSS }
         } else if child_result == LOSS {
             // Having all guaranteed loser children makes you a winner parent.
             if expansion.children.iter().all(|node| node.winner.load(Relaxed) == LOSS) {
-                WIN
+                if same_player { LOSS } else { WIN }
             } else {
-                -1
+                if same_player { -1 } else { -1 }
             }
         } else {
-            -child_result
+            if same_player { child_result } else { -child_result }
         };
 
         // Backpropagate.
