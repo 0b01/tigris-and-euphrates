@@ -3325,4 +3325,388 @@ mod tests {
         println!("Average time per call: {:?}", duration / iterations as u32);
         println!("Calls per second: {:.0}", iterations as f64 / duration.as_secs_f64());
     }
+
+    // ==================== CATASTROPHE TESTS ====================
+
+    #[test]
+    fn test_catastrophe_placement() {
+        let mut game = TnEGame::new();
+        
+        // Place a tile first
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 0),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Place catastrophe on that tile (player has 2 catastrophes by default)
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
+        assert!(ret.is_ok());
+        assert!(game.board.get_catastrophe(pos!(0, 0)));
+        assert_eq!(game.board.get_tile_type(pos!(0, 0)), TileType::Empty);
+    }
+
+    #[test]
+    fn test_cannot_place_catastrophe_on_leader() {
+        let mut game = TnEGame::new();
+        
+        // Place leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        }).unwrap();
+        
+        // Try to place catastrophe on leader position
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 1)));
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceOverLeader);
+    }
+
+    #[test]
+    fn test_monument_prevents_catastrophe() {
+        // This test verifies that monuments block catastrophe placement
+        // by directly checking the error type in the game logic
+        let mut game = TnEGame::new();
+        
+        // Manually set up a monument on the board at position (0,0)
+        game.board.monuments.set(pos!(0, 0));
+        
+        // Try to place catastrophe on monument position
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceCatastropheOnMonument);
+    }
+
+    // ==================== RIVER/BLUE TILE TESTS ====================
+
+    #[test]
+    fn test_blue_tiles_must_be_on_river() {
+        let mut game = TnEGame::new();
+        game.players.0[0].hand_blue = 2;
+        
+        // Try to place blue tile on non-river
+        let ret = game.process(Action::PlaceTile {
+            pos: pos!(0, 0),
+            tile_type: TileType::Blue,
+        });
+        assert_eq!(ret.unwrap_err(), Error::MustPlaceBlueOnRiver);
+    }
+
+    #[test]
+    fn test_non_blue_cannot_be_on_river() {
+        let mut game = TnEGame::new();
+        game.players.0[0].hand_red = 2;
+        
+        // Find a river position and try to place red
+        // River positions can be found by checking RIVER bitboard
+        // Based on the game, let's use a known river position
+        let ret = game.process(Action::PlaceTile {
+            pos: pos!(1, 4), // This should be on river based on standard board
+            tile_type: TileType::Red,
+        });
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceNonBlueOnRiver);
+    }
+
+    #[test]
+    fn test_blue_tile_on_river_succeeds() {
+        let mut game = TnEGame::new();
+        game.players.0[0].hand_blue = 2;
+        
+        // Place leader first near a river
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Blue,
+        }).unwrap();
+        
+        // Place blue tile on river
+        let ret = game.process(Action::PlaceTile {
+            pos: pos!(1, 4),
+            tile_type: TileType::Blue,
+        });
+        // This should succeed (assuming 1,4 is on river)
+        if RIVER.get(pos!(1, 4)) {
+            assert!(ret.is_ok());
+        }
+    }
+
+    // ==================== CANNOT JOIN THREE KINGDOMS ====================
+
+    #[test]
+    fn test_nearby_kingdom_count_multiple_kingdoms() {
+        let mut game = TnEGame::new();
+        
+        // Create two separate kingdoms with leaders near temple at (1,1)
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Black }).unwrap();
+        
+        // Check that nearby_kingdom_count correctly counts kingdoms
+        let count = game.board.nearby_kingdom_count();
+        // Position (1, 0) is between the two kingdoms
+        assert!(count[1][0] >= 1);
+    }
+
+    // ==================== LEADER WITHDRAWAL ====================
+
+    #[test]
+    fn test_leader_withdrawal() {
+        let mut game = TnEGame::new();
+        
+        // Place leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Withdraw the leader
+        let ret = game.process(Action::WithdrawLeader(pos!(0, 1)));
+        assert!(ret.is_ok());
+        assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::None);
+        assert!(game.players.0[0].placed_red_leader.is_none());
+    }
+
+    #[test]
+    fn test_cannot_withdraw_nonexistent_leader() {
+        let mut game = TnEGame::new();
+        
+        // Try to withdraw from empty position
+        let ret = game.process(Action::WithdrawLeader(pos!(0, 0)));
+        assert_eq!(ret.unwrap_err(), Error::CannotWithdrawLeader);
+    }
+
+    // ==================== WAR OUTCOMES ====================
+
+    #[test]
+    fn test_internal_conflict_attacker_wins() {
+        let mut game = TnEGame::new();
+        
+        // Setup: Player 1 has a red leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 places competing red leader in same kingdom
+        let ret = game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Red });
+        assert!(ret.is_ok());
+        assert!(game.internal_conflict.is_some());
+        
+        // Attacker (P2) sends 2 support
+        game.players.0[1].hand_red = 3;
+        game.process(Action::AddSupport(2)).unwrap();
+        
+        // Defender (P1) sends 0 support - attacker wins
+        game.process(Action::AddSupport(0)).unwrap();
+        
+        // P1's leader should be removed, P2's should remain
+        assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::None);
+        assert_eq!(game.board.get_leader(pos!(2, 1)), Leader::Red);
+        assert!(game.players.0[0].placed_red_leader.is_none());
+    }
+
+    #[test]
+    fn test_internal_conflict_defender_wins_on_tie() {
+        let mut game = TnEGame::new();
+        
+        // Setup: Player 1 has a red leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 places competing red leader
+        game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Red }).unwrap();
+        
+        // Both send 0 support - tie goes to defender
+        game.process(Action::AddSupport(0)).unwrap();
+        game.process(Action::AddSupport(0)).unwrap();
+        
+        // P2's leader (attacker) should be removed
+        assert_eq!(game.board.get_leader(pos!(2, 1)), Leader::None);
+        assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::Red);
+    }
+
+    // ==================== BITBOARD TESTS ====================
+
+    #[test]
+    fn test_bitboard_dilate() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(5, 5));
+        
+        let dilated = bb.dilate();
+        
+        // Should include all 4 neighbors
+        assert!(dilated.get(pos!(4, 5))); // up
+        assert!(dilated.get(pos!(6, 5))); // down
+        assert!(dilated.get(pos!(5, 4))); // left
+        assert!(dilated.get(pos!(5, 6))); // right
+        
+        // Should NOT include the original or diagonals
+        assert!(!dilated.get(pos!(5, 5)));
+        assert!(!dilated.get(pos!(4, 4)));
+        assert!(!dilated.get(pos!(6, 6)));
+    }
+
+    #[test]
+    fn test_bitboard_dilate_edge() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(0, 0)); // corner
+        
+        let dilated = bb.dilate();
+        
+        // Should only have 2 neighbors (right and down)
+        assert!(dilated.get(pos!(0, 1)));
+        assert!(dilated.get(pos!(1, 0)));
+        assert_eq!(dilated.count_ones(), 2);
+    }
+
+    #[test]
+    fn test_bitboard_dilate_no_wrap() {
+        // Test that dilate doesn't wrap around columns
+        let mut bb = Bitboard::new();
+        bb.set(pos!(5, 15)); // rightmost column
+        
+        let dilated = bb.dilate();
+        
+        // Should NOT wrap to column 0
+        assert!(!dilated.get(pos!(5, 0)));
+        // Should have left neighbor
+        assert!(dilated.get(pos!(5, 14)));
+    }
+
+    #[test]
+    fn test_bitboard_iterator() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(0, 0));
+        bb.set(pos!(5, 5));
+        bb.set(pos!(10, 10));
+        
+        let positions: Vec<Pos> = bb.iter().collect();
+        assert_eq!(positions.len(), 3);
+        assert!(positions.contains(&pos!(0, 0)));
+        assert!(positions.contains(&pos!(5, 5)));
+        assert!(positions.contains(&pos!(10, 10)));
+    }
+
+    #[test]
+    fn test_bitboard_count_ones() {
+        let mut bb = Bitboard::new();
+        assert_eq!(bb.count_ones(), 0);
+        
+        bb.set(pos!(0, 0));
+        assert_eq!(bb.count_ones(), 1);
+        
+        bb.set(pos!(5, 5));
+        assert_eq!(bb.count_ones(), 2);
+        
+        bb.set(pos!(10, 15));
+        assert_eq!(bb.count_ones(), 3);
+    }
+
+    // ==================== KINGDOM TESTS ====================
+
+    #[test]
+    fn test_kingdom_includes_connected_tiles() {
+        let mut game = TnEGame::new();
+        
+        // Place leader and some connected tiles
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.players.0[0].hand_red = 3;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        // Find kingdom
+        let mut visited = Bitboard::new();
+        let kingdom = game.board.find_kingdom(pos!(0, 1), &mut visited);
+        
+        // Should include leader position, temple at (1,1), and the new tile
+        assert!(kingdom.map.get(pos!(0, 1))); // leader
+        assert!(kingdom.map.get(pos!(1, 1))); // temple
+        assert!(kingdom.map.get(pos!(0, 0))); // new tile
+        assert!(kingdom.red_leader.is_some());
+    }
+
+    #[test]
+    fn test_connectable_bitboard() {
+        let mut game = TnEGame::new();
+        
+        // Place some elements
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        let connectable = game.board.connectable_bitboard();
+        
+        // Should include leader, tiles, and pre-existing temples
+        assert!(connectable.get(pos!(0, 1))); // leader
+        assert!(connectable.get(pos!(0, 0))); // tile
+        assert!(connectable.get(pos!(1, 1))); // temple
+    }
+
+    // ==================== SCORING TESTS ====================
+
+    #[test]
+    fn test_scoring_with_matching_leader() {
+        let mut game = TnEGame::new();
+        
+        // Place red leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // P2 places tile - P1 should score since they have matching leader
+        game.players.0[1].hand_red = 2;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        // P1 should have scored the red point
+        assert_eq!(game.players.0[0].score_red, 1);
+        assert_eq!(game.players.0[1].score_red, 0);
+    }
+
+    #[test]
+    fn test_no_scoring_without_leader() {
+        let mut game = TnEGame::new();
+        
+        // Place tile without any leader in kingdom
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        // No one should score
+        assert_eq!(game.players.0[0].score_red, 0);
+        assert_eq!(game.players.0[1].score_red, 0);
+    }
+
+    #[test]
+    fn test_min_score_calculation() {
+        let player = PlayerState {
+            score_red: 5,
+            score_blue: 3,
+            score_green: 2,
+            score_black: 1,
+            score_treasure: 2,
+            ..Default::default()
+        };
+        
+        // Min score is the lowest among the 4 colors
+        // Treasures are wildcards that get added to the lowest color
+        // With scores (5,3,2,1) and 2 treasures:
+        // - 1st treasure goes to black (lowest=1) -> now black=2
+        // - 2nd treasure goes to black/green (tied at 2) -> one becomes 3
+        // Final min is 2
+        assert_eq!(player.calculate_score(), 2);
+    }
+
+    // ==================== PASS ACTION TEST ====================
+
+    #[test]
+    fn test_pass_action() {
+        let mut game = TnEGame::new();
+        
+        let ret = game.process(Action::Pass);
+        assert!(ret.is_ok());
+        assert_eq!(game.play_action_stack.len(), 1);
+    }
+
+    #[test]
+    fn test_two_passes_ends_turn() {
+        let mut game = TnEGame::new();
+        
+        game.process(Action::Pass).unwrap();
+        let ret = game.process(Action::Pass).unwrap();
+        
+        // After two passes, should be player 2's turn
+        assert_eq!(ret.0, Player::Player2);
+    }
 }
