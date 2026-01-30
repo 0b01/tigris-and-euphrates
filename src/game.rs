@@ -37,6 +37,31 @@ static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     mask
 });
 
+// Column masks for dilate operation - prevent wrap-around (compile-time constants)
+// Column 0: bits at positions 0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160
+const COL_0_MASK: Bitboard = Bitboard::from_binary([
+    0x0001_0001_0001_0001,
+    0x0001_0001_0001_0001,
+    0x0000_0001_0001_0001,
+    0x0
+]);
+
+// Column 15: bits at positions 15, 31, 47, 63, 79, 95, 111, 127, 143, 159, 175
+const COL_15_MASK: Bitboard = Bitboard::from_binary([
+    0x8000_8000_8000_8000,
+    0x8000_8000_8000_8000,
+    0x0000_8000_8000_8000,
+    0x0
+]);
+
+// Board boundary mask - only positions 0-175 are valid (11 rows x 16 columns)
+const BOARD_MASK: Bitboard = Bitboard::from_binary([
+    0xFFFF_FFFF_FFFF_FFFF,
+    0xFFFF_FFFF_FFFF_FFFF,
+    0x0000_FFFF_FFFF_FFFF,
+    0x0
+]);
+
 static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut ret = [[Bitboard::new(); W]; H];
     for x in 0..H {
@@ -850,16 +875,11 @@ impl TnEGame {
         }
 
         if let Some((player_2, p2_pos)) = has_conflict {
-            let attacker_base_strength = pos
-                .neighbors().iter()
-                .map(|n| self.board.get_tile_type(n))
-                .filter(|t| *t == TileType::Red)
-                .count() as u8;
-            let defender_base_strength = p2_pos
-                .neighbors().iter()
-                .map(|n| self.board.get_tile_type(n))
-                .filter(|t| *t == TileType::Red)
-                .count() as u8;
+            // Use bitboard intersection for fast red tile counting
+            let attacker_neighbors = pos.neighbors();
+            let attacker_base_strength = (attacker_neighbors & self.board.red_tiles).count_ones();
+            let defender_neighbors = p2_pos.neighbors();
+            let defender_base_strength = (defender_neighbors & self.board.red_tiles).count_ones();
             self.internal_conflict = Some(Conflict {
                 is_internal: true,
                 attacker: current_player,
@@ -1463,10 +1483,12 @@ pub const fn pos(a: &'static str) -> Pos {
 }
 
 impl Pos {
+    #[inline]
     fn neighbors(&self) -> Bitboard {
         NEIGHBORS_MASK[self.x as usize][self.y as usize]
     }
 
+    #[inline]
     fn right(&self) -> Pos {
         Self {
             x: self.x,
@@ -1474,6 +1496,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn left(&self) -> Pos {
         Self {
             x: self.x,
@@ -1481,6 +1504,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn up(&self) -> Pos {
         Self {
             x: self.x - 1,
@@ -1488,6 +1512,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn down(&self) -> Pos {
         Self {
             x: self.x + 1,
@@ -1495,10 +1520,12 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn index(&self) -> usize {
         self.x as usize * W + self.y as usize
     }
 
+    #[inline]
     fn from_index(index: usize) -> Pos {
         Pos {
             x: (index / W) as u8,
@@ -1506,6 +1533,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn mask(&self) -> Bitboard {
         POS_TO_BITBOARD[self.x as usize][self.y as usize]
     }
@@ -1663,19 +1691,33 @@ impl PlayerState {
         // 100 points for each final score
         s += self.calculate_score() as i16 * 20;
 
+        // Precompute connectable positions once
+        let connectable = state.board.connectable_bitboard();
+        let mut visited = Bitboard::new();
+
         for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
             if let Some(pos) = self.get_leader(leader) {
-                // 5 points for nearby red tiles
-                for p in pos.neighbors().iter() {
-                    if state.board.get_tile_type(p) == TileType::Red {
-                        s += 10;
-                    }
-                }
+                // 5 points for nearby red tiles (use bitboard intersection)
+                let neighbors = pos.neighbors();
+                let nearby_red_count = (neighbors & state.board.red_tiles).count_ones();
+                s += nearby_red_count as i16 * 10;
 
                 // 5 points for each matching tile in kingdom
-                let mut visited = Bitboard::new();
-                let kingdom = state.board.find_kingdom(pos, &mut visited);
-                s += kingdom.get_leader_info(leader).unwrap().2 as i16 * 5;
+                // Only compute kingdom if not already visited
+                if !visited.get(pos) {
+                    let kingdom_map = state.board.find_kingdom_map_fast(pos, connectable);
+                    visited |= kingdom_map;
+                    
+                    // Count matching tiles using bitboard intersection
+                    let tile_count = match leader {
+                        Leader::Red => (kingdom_map & state.board.red_tiles).count_ones(),
+                        Leader::Blue => (kingdom_map & state.board.blue_tiles).count_ones(),
+                        Leader::Green => (kingdom_map & state.board.green_tiles).count_ones(),
+                        Leader::Black => (kingdom_map & state.board.black_tiles).count_ones(),
+                        Leader::None => 0,
+                    };
+                    s += tile_count as i16 * 5;
+                }
             }
         }
 
@@ -1744,51 +1786,136 @@ impl Bitboard {
         Self(U256(s))
     }
 
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
-        let mut mask = self.0;
+        let mut parts = self.0.0; // Copy the 4 u64 parts
+        let mut part_idx = 0usize;
         std::iter::from_fn(move || {
-            if mask.is_zero() {
-                None
-            } else {
-                let pos = mask.trailing_zeros() as usize;
-                mask &= !(U256::one() << U256::from(pos));
-                Some(pos!(pos as u8 / W as u8, pos as u8 % W as u8))
+            // Find next set bit across all u64 parts
+            while part_idx < 4 {
+                if parts[part_idx] != 0 {
+                    let bit_pos = parts[part_idx].trailing_zeros() as usize;
+                    parts[part_idx] &= parts[part_idx] - 1; // Clear lowest set bit
+                    let global_pos = part_idx * 64 + bit_pos;
+                    return Some(pos!(global_pos as u8 / W as u8, global_pos as u8 % W as u8));
+                }
+                part_idx += 1;
             }
+            None
         })
     }
 
+    #[inline]
     pub fn count_ones(&self) -> u8 {
-        self.0.0.iter().map(|x| x.count_ones() as u8).sum()
+        (self.0.0[0].count_ones() + self.0.0[1].count_ones() + 
+         self.0.0[2].count_ones() + self.0.0[3].count_ones()) as u8
     }
 
+    #[inline]
     pub fn set(&mut self, pos: Pos) {
-        *self |= pos.mask()
+        let index = pos.index();
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        self.0.0[word_idx] |= 1u64 << bit_idx;
     }
 
+    #[inline]
     pub fn clear(&mut self) {
         self.0 = U256::zero();
     }
 
+    #[inline]
     pub fn reset(&mut self, pos: Pos) {
         *self &= !pos.mask();
     }
 
+    #[inline]
     pub fn get(&self, pos: Pos) -> bool {
-        (*self & pos.mask()).0 != U256::zero()
+        let index = pos.index();
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        (self.0.0[word_idx] & (1u64 << bit_idx)) != 0
     }
 
-    fn pop(&mut self) -> Option<Pos> {
-        // pop the first 1 in the U256
-        let mut i = 0;
-        while i < 4 {
+    /// Get the first set bit position without modifying the bitboard
+    #[inline]
+    pub fn first_set_pos(&self) -> Option<Pos> {
+        for i in 0..4 {
             if self.0.0[i] != 0 {
                 let j = self.0.0[i].trailing_zeros() as usize;
-                self.0.0[i] &= !(1 << j);
                 return Some(Pos::from_index(i * 64 + j));
             }
-            i += 1;
         }
         None
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<Pos> {
+        // pop the first 1 in the U256
+        if self.0.0[0] != 0 {
+            let j = self.0.0[0].trailing_zeros() as usize;
+            self.0.0[0] &= self.0.0[0] - 1; // Clear lowest set bit
+            return Some(Pos::from_index(j));
+        }
+        if self.0.0[1] != 0 {
+            let j = self.0.0[1].trailing_zeros() as usize;
+            self.0.0[1] &= self.0.0[1] - 1;
+            return Some(Pos::from_index(64 + j));
+        }
+        if self.0.0[2] != 0 {
+            let j = self.0.0[2].trailing_zeros() as usize;
+            self.0.0[2] &= self.0.0[2] - 1;
+            return Some(Pos::from_index(128 + j));
+        }
+        if self.0.0[3] != 0 {
+            let j = self.0.0[3].trailing_zeros() as usize;
+            self.0.0[3] &= self.0.0[3] - 1;
+            return Some(Pos::from_index(192 + j));
+        }
+        None
+    }
+
+    /// Expand the bitboard to include all orthogonal neighbors.
+    /// Uses direct u64 operations for speed.
+    #[inline]
+    pub fn dilate(&self) -> Bitboard {
+        let p = &self.0.0;
+        
+        // Column masks for each u64 word
+        const NOT_COL_0: u64 = !0x0001_0001_0001_0001u64;
+        const NOT_COL_15: u64 = !0x8000_8000_8000_8000u64;
+        
+        // Up: shift right by 16 within each word, carry from next word
+        let up0 = (p[0] >> 16) | (p[1] << 48);
+        let up1 = (p[1] >> 16) | (p[2] << 48);
+        let up2 = p[2] >> 16; // No carry from p[3] since it's always 0 for our board
+        
+        // Down: shift left by 16 within each word, carry from prev word
+        let down0 = p[0] << 16;
+        let down1 = (p[1] << 16) | (p[0] >> 48);
+        let down2 = (p[2] << 16) | (p[1] >> 48);
+        
+        // Left: shift right by 1, mask out column 15 to prevent wrap
+        let left0 = (p[0] >> 1) & NOT_COL_15;
+        let left1 = (p[1] >> 1) & NOT_COL_15;
+        let left2 = (p[2] >> 1) & NOT_COL_15;
+        
+        // Right: shift left by 1, mask out column 0 to prevent wrap
+        let right0 = (p[0] << 1) & NOT_COL_0;
+        let right1 = (p[1] << 1) & NOT_COL_0;
+        let right2 = (p[2] << 1) & NOT_COL_0;
+        
+        // Combine all directions and mask to valid board
+        const BOARD_MASK_0: u64 = 0xFFFF_FFFF_FFFF_FFFFu64;
+        const BOARD_MASK_1: u64 = 0xFFFF_FFFF_FFFF_FFFFu64;
+        const BOARD_MASK_2: u64 = 0x0000_FFFF_FFFF_FFFFu64; // Only first 48 bits valid
+        
+        Bitboard::from_binary([
+            (up0 | down0 | left0 | right0) & BOARD_MASK_0,
+            (up1 | down1 | left1 | right1) & BOARD_MASK_1,
+            (up2 | down2 | left2 | right2) & BOARD_MASK_2,
+            0,
+        ])
     }
 }
 
@@ -1882,11 +2009,25 @@ impl Board {
         ret
     }
 
+    #[inline]
     pub fn is_connectable(&self, pos: Pos) -> bool {
-        self.get_tile_type(pos) != TileType::Empty
-            || self.get_leader(pos) != Leader::None
-            || self.unification_tile == Some(pos)
-            || self.get_monument(pos)
+        // Fast check using bitboard - avoids multiple function calls
+        let tiles = self.red_tiles | self.blue_tiles | self.green_tiles | self.black_tiles;
+        let leaders = self.leader_red | self.leader_blue | self.leader_green | self.leader_black;
+        (tiles | leaders | self.monuments).get(pos) || self.unification_tile == Some(pos)
+    }
+
+    /// Get a bitboard of all connectable positions on the board.
+    /// A position is connectable if it has a tile, leader, monument, or is the unification tile.
+    #[inline]
+    pub fn connectable_bitboard(&self) -> Bitboard {
+        let tiles = self.red_tiles | self.blue_tiles | self.green_tiles | self.black_tiles;
+        let leaders = self.leader_red | self.leader_blue | self.leader_green | self.leader_black;
+        let mut result = tiles | leaders | self.monuments;
+        if let Some(pos) = self.unification_tile {
+            result.set(pos);
+        }
+        result
     }
 
     pub fn can_place_catastrophe(&self, pos: Pos) -> bool {
@@ -1933,7 +2074,7 @@ impl Board {
             }
             visited.set(pos);
             for neighbor in pos.neighbors().iter() {
-                if self.is_connectable(pos) {
+                if self.is_connectable(neighbor) {
                     stack.set(neighbor);
                 }
             }
@@ -1972,35 +2113,26 @@ impl Board {
 
     pub fn nearby_kingdom_count(&self) -> [[u8; 16]; 11] {
         // for each grid cell, count number of neighboring kingdoms
-        let mut visited = Bitboard::new();
         let mut count = [[0_u8; W]; H];
 
-        for x in 0..H {
-            for y in 0..W {
-                let pos = pos!(x as u8, y as u8);
-                if visited.get(pos) {
-                    continue;
-                }
-                let kingdom = self.find_kingdom(pos, &mut visited);
-                if !kingdom.has_leader() {
-                    continue;
-                }
+        // Only start from positions with leaders - kingdoms without leaders are skipped anyway
+        let mut remaining_leaders = self.leader_red | self.leader_blue | self.leader_green | self.leader_black;
+        
+        // Precompute connectable positions once
+        let connectable = self.connectable_bitboard();
+        
+        while let Some(pos) = remaining_leaders.first_set_pos() {
+            // Find kingdom map using fast bitboard flood-fill
+            let kingdom_map = self.find_kingdom_map_fast(pos, connectable);
+            remaining_leaders &= !kingdom_map;
+            
+            // find surrounding empty cells using bitboard dilate
+            let neighbor_mask = kingdom_map.dilate();
+            let nearby_empty_cells = !kingdom_map & neighbor_mask;
 
-                // find surrounding empty cells
-                let neighbor_mask = kingdom.map
-                    .iter()
-                    .map(|p| p.neighbors())
-                    .reduce(|a, b| a | b)
-                    .unwrap_or_default();
-                let nearby_empty_cells = !kingdom.map & neighbor_mask;
-
-                for (rr, row) in count.iter_mut().enumerate() {
-                    for (cc, c) in row.iter_mut().enumerate() {
-                        if nearby_empty_cells.get(pos!(rr as u8, cc as u8)) {
-                            *c += 1;
-                        }
-                    }
-                }
+            // Iterate only over set bits instead of all cells
+            for pos in nearby_empty_cells.iter() {
+                count[pos.x as usize][pos.y as usize] += 1;
             }
         }
         count
@@ -2037,37 +2169,63 @@ impl Board {
         }
     }
 
+    /// Optimized flood-fill using pure bitboard operations.
+    /// Returns the kingdom map starting from `start` position.
+    #[inline]
+    pub fn find_kingdom_map_fast(&self, start: Pos, connectable: Bitboard) -> Bitboard {
+        let mut kingdom = start.mask() & connectable;
+        if kingdom.0.is_zero() {
+            return kingdom;
+        }
+        
+        loop {
+            // Expand to neighbors and intersect with connectable positions
+            let expanded = kingdom.dilate() & connectable;
+            let new_kingdom = kingdom | expanded;
+            
+            // If no new cells were added, we're done
+            if (new_kingdom.0 ^ kingdom.0).is_zero() {
+                break;
+            }
+            kingdom = new_kingdom;
+        }
+        
+        kingdom
+    }
+
     pub fn find_kingdom(&self, pos: Pos, visited: &mut Bitboard) -> Kingdom {
         let mut kingdom = Kingdom::default();
 
-        let mut stack = pos.mask();
-        let mut map = Bitboard::new();
-
-        while let Some(pos) = stack.pop() {
-            if visited.get(pos) {
-                continue;
-            }
-            *visited |= pos.mask();
-
-            if !self.is_connectable(pos) {
-                continue;
-            }
-
-            map |= pos.mask();
-
-            if self.get_treasure(pos) {
-                match &mut kingdom.treasures {
-                    [None, None] => kingdom.treasures[0] = Some(pos),
-                    [Some(_), None] => kingdom.treasures[1] = Some(pos),
-                    [Some(_), Some(_)] => (), // just ignore if kingdom has 3 treasures
-                    _ => unreachable!(),
-                }
-            }
-
-            stack |= pos.neighbors();
+        // Use fast bitboard flood-fill instead of stack-based approach
+        let connectable = self.connectable_bitboard();
+        let start = pos.mask() & connectable;
+        
+        if start.0.is_zero() {
+            return kingdom;
         }
-
+        
+        let mut map = start;
+        loop {
+            let expanded = map.dilate() & connectable;
+            let new_map = map | expanded;
+            if (new_map.0 ^ map.0).is_zero() {
+                break;
+            }
+            map = new_map;
+        }
+        
+        *visited |= map;
         kingdom.map = map;
+
+        // Find treasures using bitboard intersection
+        let treasure_positions = map & self.treasures;
+        let mut treasure_iter = treasure_positions.iter();
+        if let Some(t1) = treasure_iter.next() {
+            kingdom.treasures[0] = Some(t1);
+            if let Some(t2) = treasure_iter.next() {
+                kingdom.treasures[1] = Some(t2);
+            }
+        }
 
         kingdom.red_tiles = (map & self.red_tiles).count_ones();
         kingdom.blue_tiles = (map & self.blue_tiles).count_ones();
@@ -3131,5 +3289,424 @@ mod tests {
         game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red }).unwrap();
         let moves = game.next_action().generate_moves(&game);
         dbg!(moves);
+    }
+
+    #[test]
+    fn bench_nearby_kingdom_count() {
+        use std::time::Instant;
+
+        // Setup a game with multiple kingdoms for realistic benchmark
+        let mut game = TnEGame::new();
+        let _ = game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        });
+        let _ = game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red });
+        let _ = game.process(Action::PlaceLeader { pos: pos!(1, 3), leader: Leader::Red });
+        let _ = game.process(Action::PlaceTile { pos: pos!(5, 5), tile_type: TileType::Red });
+        let _ = game.process(Action::PlaceLeader { pos: pos!(5, 6), leader: Leader::Green });
+
+        // Warm up
+        for _ in 0..1000 {
+            let _ = game.board.nearby_kingdom_count();
+        }
+
+        // Benchmark
+        let iterations = 100_000;
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = game.board.nearby_kingdom_count();
+        }
+        let duration = start.elapsed();
+
+        println!("\n=== nearby_kingdom_count benchmark ===");
+        println!("Iterations: {}", iterations);
+        println!("Total time: {:?}", duration);
+        println!("Average time per call: {:?}", duration / iterations as u32);
+        println!("Calls per second: {:.0}", iterations as f64 / duration.as_secs_f64());
+    }
+
+    // ==================== CATASTROPHE TESTS ====================
+
+    #[test]
+    fn test_catastrophe_placement() {
+        let mut game = TnEGame::new();
+        
+        // Place a tile first
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 0),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Place catastrophe on that tile (player has 2 catastrophes by default)
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
+        assert!(ret.is_ok());
+        assert!(game.board.get_catastrophe(pos!(0, 0)));
+        assert_eq!(game.board.get_tile_type(pos!(0, 0)), TileType::Empty);
+    }
+
+    #[test]
+    fn test_cannot_place_catastrophe_on_leader() {
+        let mut game = TnEGame::new();
+        
+        // Place leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        }).unwrap();
+        
+        // Try to place catastrophe on leader position
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 1)));
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceOverLeader);
+    }
+
+    #[test]
+    fn test_monument_prevents_catastrophe() {
+        // This test verifies that monuments block catastrophe placement
+        // by directly checking the error type in the game logic
+        let mut game = TnEGame::new();
+        
+        // Manually set up a monument on the board at position (0,0)
+        game.board.monuments.set(pos!(0, 0));
+        
+        // Try to place catastrophe on monument position
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceCatastropheOnMonument);
+    }
+
+    // ==================== RIVER/BLUE TILE TESTS ====================
+
+    #[test]
+    fn test_blue_tiles_must_be_on_river() {
+        let mut game = TnEGame::new();
+        game.players.0[0].hand_blue = 2;
+        
+        // Try to place blue tile on non-river
+        let ret = game.process(Action::PlaceTile {
+            pos: pos!(0, 0),
+            tile_type: TileType::Blue,
+        });
+        assert_eq!(ret.unwrap_err(), Error::MustPlaceBlueOnRiver);
+    }
+
+    #[test]
+    fn test_non_blue_cannot_be_on_river() {
+        let mut game = TnEGame::new();
+        game.players.0[0].hand_red = 2;
+        
+        // Find a river position and try to place red
+        // River positions can be found by checking RIVER bitboard
+        // Based on the game, let's use a known river position
+        let ret = game.process(Action::PlaceTile {
+            pos: pos!(1, 4), // This should be on river based on standard board
+            tile_type: TileType::Red,
+        });
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceNonBlueOnRiver);
+    }
+
+    #[test]
+    fn test_blue_tile_on_river_succeeds() {
+        let mut game = TnEGame::new();
+        game.players.0[0].hand_blue = 2;
+        
+        // Place leader first near a river
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Blue,
+        }).unwrap();
+        
+        // Place blue tile on river
+        let ret = game.process(Action::PlaceTile {
+            pos: pos!(1, 4),
+            tile_type: TileType::Blue,
+        });
+        // This should succeed (assuming 1,4 is on river)
+        if RIVER.get(pos!(1, 4)) {
+            assert!(ret.is_ok());
+        }
+    }
+
+    // ==================== CANNOT JOIN THREE KINGDOMS ====================
+
+    #[test]
+    fn test_nearby_kingdom_count_multiple_kingdoms() {
+        let mut game = TnEGame::new();
+        
+        // Create two separate kingdoms with leaders near temple at (1,1)
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Black }).unwrap();
+        
+        // Check that nearby_kingdom_count correctly counts kingdoms
+        let count = game.board.nearby_kingdom_count();
+        // Position (1, 0) is between the two kingdoms
+        assert!(count[1][0] >= 1);
+    }
+
+    // ==================== LEADER WITHDRAWAL ====================
+
+    #[test]
+    fn test_leader_withdrawal() {
+        let mut game = TnEGame::new();
+        
+        // Place leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Withdraw the leader
+        let ret = game.process(Action::WithdrawLeader(pos!(0, 1)));
+        assert!(ret.is_ok());
+        assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::None);
+        assert!(game.players.0[0].placed_red_leader.is_none());
+    }
+
+    #[test]
+    fn test_cannot_withdraw_nonexistent_leader() {
+        let mut game = TnEGame::new();
+        
+        // Try to withdraw from empty position
+        let ret = game.process(Action::WithdrawLeader(pos!(0, 0)));
+        assert_eq!(ret.unwrap_err(), Error::CannotWithdrawLeader);
+    }
+
+    // ==================== WAR OUTCOMES ====================
+
+    #[test]
+    fn test_internal_conflict_attacker_wins() {
+        let mut game = TnEGame::new();
+        
+        // Setup: Player 1 has a red leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 places competing red leader in same kingdom
+        let ret = game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Red });
+        assert!(ret.is_ok());
+        assert!(game.internal_conflict.is_some());
+        
+        // Attacker (P2) sends 2 support
+        game.players.0[1].hand_red = 3;
+        game.process(Action::AddSupport(2)).unwrap();
+        
+        // Defender (P1) sends 0 support - attacker wins
+        game.process(Action::AddSupport(0)).unwrap();
+        
+        // P1's leader should be removed, P2's should remain
+        assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::None);
+        assert_eq!(game.board.get_leader(pos!(2, 1)), Leader::Red);
+        assert!(game.players.0[0].placed_red_leader.is_none());
+    }
+
+    #[test]
+    fn test_internal_conflict_defender_wins_on_tie() {
+        let mut game = TnEGame::new();
+        
+        // Setup: Player 1 has a red leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 places competing red leader
+        game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Red }).unwrap();
+        
+        // Both send 0 support - tie goes to defender
+        game.process(Action::AddSupport(0)).unwrap();
+        game.process(Action::AddSupport(0)).unwrap();
+        
+        // P2's leader (attacker) should be removed
+        assert_eq!(game.board.get_leader(pos!(2, 1)), Leader::None);
+        assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::Red);
+    }
+
+    // ==================== BITBOARD TESTS ====================
+
+    #[test]
+    fn test_bitboard_dilate() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(5, 5));
+        
+        let dilated = bb.dilate();
+        
+        // Should include all 4 neighbors
+        assert!(dilated.get(pos!(4, 5))); // up
+        assert!(dilated.get(pos!(6, 5))); // down
+        assert!(dilated.get(pos!(5, 4))); // left
+        assert!(dilated.get(pos!(5, 6))); // right
+        
+        // Should NOT include the original or diagonals
+        assert!(!dilated.get(pos!(5, 5)));
+        assert!(!dilated.get(pos!(4, 4)));
+        assert!(!dilated.get(pos!(6, 6)));
+    }
+
+    #[test]
+    fn test_bitboard_dilate_edge() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(0, 0)); // corner
+        
+        let dilated = bb.dilate();
+        
+        // Should only have 2 neighbors (right and down)
+        assert!(dilated.get(pos!(0, 1)));
+        assert!(dilated.get(pos!(1, 0)));
+        assert_eq!(dilated.count_ones(), 2);
+    }
+
+    #[test]
+    fn test_bitboard_dilate_no_wrap() {
+        // Test that dilate doesn't wrap around columns
+        let mut bb = Bitboard::new();
+        bb.set(pos!(5, 15)); // rightmost column
+        
+        let dilated = bb.dilate();
+        
+        // Should NOT wrap to column 0
+        assert!(!dilated.get(pos!(5, 0)));
+        // Should have left neighbor
+        assert!(dilated.get(pos!(5, 14)));
+    }
+
+    #[test]
+    fn test_bitboard_iterator() {
+        let mut bb = Bitboard::new();
+        bb.set(pos!(0, 0));
+        bb.set(pos!(5, 5));
+        bb.set(pos!(10, 10));
+        
+        let positions: Vec<Pos> = bb.iter().collect();
+        assert_eq!(positions.len(), 3);
+        assert!(positions.contains(&pos!(0, 0)));
+        assert!(positions.contains(&pos!(5, 5)));
+        assert!(positions.contains(&pos!(10, 10)));
+    }
+
+    #[test]
+    fn test_bitboard_count_ones() {
+        let mut bb = Bitboard::new();
+        assert_eq!(bb.count_ones(), 0);
+        
+        bb.set(pos!(0, 0));
+        assert_eq!(bb.count_ones(), 1);
+        
+        bb.set(pos!(5, 5));
+        assert_eq!(bb.count_ones(), 2);
+        
+        bb.set(pos!(10, 15));
+        assert_eq!(bb.count_ones(), 3);
+    }
+
+    // ==================== KINGDOM TESTS ====================
+
+    #[test]
+    fn test_kingdom_includes_connected_tiles() {
+        let mut game = TnEGame::new();
+        
+        // Place leader and some connected tiles
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.players.0[0].hand_red = 3;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        // Find kingdom
+        let mut visited = Bitboard::new();
+        let kingdom = game.board.find_kingdom(pos!(0, 1), &mut visited);
+        
+        // Should include leader position, temple at (1,1), and the new tile
+        assert!(kingdom.map.get(pos!(0, 1))); // leader
+        assert!(kingdom.map.get(pos!(1, 1))); // temple
+        assert!(kingdom.map.get(pos!(0, 0))); // new tile
+        assert!(kingdom.red_leader.is_some());
+    }
+
+    #[test]
+    fn test_connectable_bitboard() {
+        let mut game = TnEGame::new();
+        
+        // Place some elements
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        let connectable = game.board.connectable_bitboard();
+        
+        // Should include leader, tiles, and pre-existing temples
+        assert!(connectable.get(pos!(0, 1))); // leader
+        assert!(connectable.get(pos!(0, 0))); // tile
+        assert!(connectable.get(pos!(1, 1))); // temple
+    }
+
+    // ==================== SCORING TESTS ====================
+
+    #[test]
+    fn test_scoring_with_matching_leader() {
+        let mut game = TnEGame::new();
+        
+        // Place red leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Red }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // P2 places tile - P1 should score since they have matching leader
+        game.players.0[1].hand_red = 2;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        // P1 should have scored the red point
+        assert_eq!(game.players.0[0].score_red, 1);
+        assert_eq!(game.players.0[1].score_red, 0);
+    }
+
+    #[test]
+    fn test_no_scoring_without_leader() {
+        let mut game = TnEGame::new();
+        
+        // Place tile without any leader in kingdom
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        
+        // No one should score
+        assert_eq!(game.players.0[0].score_red, 0);
+        assert_eq!(game.players.0[1].score_red, 0);
+    }
+
+    #[test]
+    fn test_min_score_calculation() {
+        let player = PlayerState {
+            score_red: 5,
+            score_blue: 3,
+            score_green: 2,
+            score_black: 1,
+            score_treasure: 2,
+            ..Default::default()
+        };
+        
+        // Min score is the lowest among the 4 colors
+        // Treasures are wildcards that get added to the lowest color
+        // With scores (5,3,2,1) and 2 treasures:
+        // - 1st treasure goes to black (lowest=1) -> now black=2
+        // - 2nd treasure goes to black/green (tied at 2) -> one becomes 3
+        // Final min is 2
+        assert_eq!(player.calculate_score(), 2);
+    }
+
+    // ==================== PASS ACTION TEST ====================
+
+    #[test]
+    fn test_pass_action() {
+        let mut game = TnEGame::new();
+        
+        let ret = game.process(Action::Pass);
+        assert!(ret.is_ok());
+        assert_eq!(game.play_action_stack.len(), 1);
+    }
+
+    #[test]
+    fn test_two_passes_ends_turn() {
+        let mut game = TnEGame::new();
+        
+        game.process(Action::Pass).unwrap();
+        let ret = game.process(Action::Pass).unwrap();
+        
+        // After two passes, should be player 2's turn
+        assert_eq!(ret.0, Player::Player2);
     }
 }

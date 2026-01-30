@@ -4,3 +4,6 @@
 assets/*.kra~
 assets/*.png~
 .env
+perf.data*
+flamegraph_after.svg
+flamegraph_*.svg
