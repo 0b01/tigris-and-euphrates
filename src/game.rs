@@ -37,6 +37,23 @@ static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     mask
 });
 
+// Column masks for dilate operation - prevent wrap-around (compile-time constants)
+// Column 0: bits at positions 0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160
+const COL_0_MASK: Bitboard = Bitboard::from_binary([
+    0x0001_0001_0001_0001,
+    0x0001_0001_0001_0001,
+    0x0000_0001_0001_0001,
+    0x0
+]);
+
+// Column 15: bits at positions 15, 31, 47, 63, 79, 95, 111, 127, 143, 159, 175
+const COL_15_MASK: Bitboard = Bitboard::from_binary([
+    0x8000_8000_8000_8000,
+    0x8000_8000_8000_8000,
+    0x0000_8000_8000_8000,
+    0x0
+]);
+
 static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut ret = [[Bitboard::new(); W]; H];
     for x in 0..H {
@@ -1744,16 +1761,22 @@ impl Bitboard {
         Self(U256(s))
     }
 
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
-        let mut mask = self.0;
+        let mut parts = self.0.0; // Copy the 4 u64 parts
+        let mut part_idx = 0usize;
         std::iter::from_fn(move || {
-            if mask.is_zero() {
-                None
-            } else {
-                let pos = mask.trailing_zeros() as usize;
-                mask &= !(U256::one() << U256::from(pos));
-                Some(pos!(pos as u8 / W as u8, pos as u8 % W as u8))
+            // Find next set bit across all u64 parts
+            while part_idx < 4 {
+                if parts[part_idx] != 0 {
+                    let bit_pos = parts[part_idx].trailing_zeros() as usize;
+                    parts[part_idx] &= parts[part_idx] - 1; // Clear lowest set bit
+                    let global_pos = part_idx * 64 + bit_pos;
+                    return Some(pos!(global_pos as u8 / W as u8, global_pos as u8 % W as u8));
+                }
+                part_idx += 1;
             }
+            None
         })
     }
 
@@ -1789,6 +1812,22 @@ impl Bitboard {
             i += 1;
         }
         None
+    }
+
+    /// Expand the bitboard to include all orthogonal neighbors.
+    /// Uses bit shifts instead of iterating over each position.
+    #[inline]
+    pub fn dilate(&self) -> Bitboard {
+        // Up: shift right by W (16) - moves to lower row index
+        let up = Bitboard(self.0 >> W);
+        // Down: shift left by W (16) - moves to higher row index  
+        let down = Bitboard(self.0 << W);
+        // Left: shift right by 1, but mask out column 15 to prevent wrap
+        let left = Bitboard((self.0 >> 1) & (!COL_15_MASK).0);
+        // Right: shift left by 1, but mask out column 0 to prevent wrap
+        let right = Bitboard((self.0 << 1) & (!COL_0_MASK).0);
+        
+        up | down | left | right
     }
 }
 
@@ -1889,6 +1928,19 @@ impl Board {
             || self.get_monument(pos)
     }
 
+    /// Get a bitboard of all connectable positions on the board.
+    /// A position is connectable if it has a tile, leader, monument, or is the unification tile.
+    #[inline]
+    pub fn connectable_bitboard(&self) -> Bitboard {
+        let tiles = self.red_tiles | self.blue_tiles | self.green_tiles | self.black_tiles;
+        let leaders = self.leader_red | self.leader_blue | self.leader_green | self.leader_black;
+        let mut result = tiles | leaders | self.monuments;
+        if let Some(pos) = self.unification_tile {
+            result.set(pos);
+        }
+        result
+    }
+
     pub fn can_place_catastrophe(&self, pos: Pos) -> bool {
         self.get_leader(pos) == Leader::None
             && self.get_tile_type(pos) != TileType::Empty
@@ -1972,32 +2024,29 @@ impl Board {
 
     pub fn nearby_kingdom_count(&self) -> [[u8; 16]; 11] {
         // for each grid cell, count number of neighboring kingdoms
-        let mut visited = Bitboard::new();
         let mut count = [[0_u8; W]; H];
 
-        for x in 0..H {
-            for y in 0..W {
-                let pos = pos!(x as u8, y as u8);
-                if visited.get(pos) {
-                    continue;
-                }
-                let kingdom = self.find_kingdom(pos, &mut visited);
-                if !kingdom.has_leader() {
-                    continue;
-                }
+        // Only start from positions with leaders - kingdoms without leaders are skipped anyway
+        let mut remaining_leaders = self.leader_red | self.leader_blue | self.leader_green | self.leader_black;
+        
+        // Precompute connectable positions once
+        let connectable = self.connectable_bitboard();
+        
+        loop {
+            // Get next unprocessed leader position
+            let Some(pos) = remaining_leaders.iter().next() else { break };
+            
+            // Find kingdom map using fast bitboard flood-fill
+            let kingdom_map = self.find_kingdom_map_fast(pos, connectable);
+            remaining_leaders &= !kingdom_map;
+            
+            // find surrounding empty cells using bitboard dilate
+            let neighbor_mask = kingdom_map.dilate();
+            let nearby_empty_cells = !kingdom_map & neighbor_mask;
 
-                // find surrounding empty cells
-                let neighbor_mask = kingdom.map
-                    .iter()
-                    .map(|p| p.neighbors())
-                    .reduce(|a, b| a | b)
-                    .unwrap_or_default();
-                let nearby_empty_cells = !kingdom.map & neighbor_mask;
-
-                // Iterate only over set bits instead of all cells
-                for pos in nearby_empty_cells.iter() {
-                    count[pos.x as usize][pos.y as usize] += 1;
-                }
+            // Iterate only over set bits instead of all cells
+            for pos in nearby_empty_cells.iter() {
+                count[pos.x as usize][pos.y as usize] += 1;
             }
         }
         count
@@ -2032,6 +2081,30 @@ impl Board {
 
             stack |= pos.neighbors();
         }
+    }
+
+    /// Optimized flood-fill using pure bitboard operations.
+    /// Returns the kingdom map starting from `start` position.
+    #[inline]
+    pub fn find_kingdom_map_fast(&self, start: Pos, connectable: Bitboard) -> Bitboard {
+        let mut kingdom = start.mask() & connectable;
+        if kingdom.0.is_zero() {
+            return kingdom;
+        }
+        
+        loop {
+            // Expand to neighbors and intersect with connectable positions
+            let expanded = kingdom.dilate() & connectable;
+            let new_kingdom = kingdom | expanded;
+            
+            // If no new cells were added, we're done (use XOR to check for changes)
+            if (new_kingdom.0 ^ kingdom.0).is_zero() {
+                break;
+            }
+            kingdom = new_kingdom;
+        }
+        
+        kingdom
     }
 
     pub fn find_kingdom(&self, pos: Pos, visited: &mut Bitboard) -> Kingdom {
@@ -3128,5 +3201,40 @@ mod tests {
         game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red }).unwrap();
         let moves = game.next_action().generate_moves(&game);
         dbg!(moves);
+    }
+
+    #[test]
+    fn bench_nearby_kingdom_count() {
+        use std::time::Instant;
+
+        // Setup a game with multiple kingdoms for realistic benchmark
+        let mut game = TnEGame::new();
+        let _ = game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        });
+        let _ = game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red });
+        let _ = game.process(Action::PlaceLeader { pos: pos!(1, 3), leader: Leader::Red });
+        let _ = game.process(Action::PlaceTile { pos: pos!(5, 5), tile_type: TileType::Red });
+        let _ = game.process(Action::PlaceLeader { pos: pos!(5, 6), leader: Leader::Green });
+
+        // Warm up
+        for _ in 0..1000 {
+            let _ = game.board.nearby_kingdom_count();
+        }
+
+        // Benchmark
+        let iterations = 100_000;
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = game.board.nearby_kingdom_count();
+        }
+        let duration = start.elapsed();
+
+        println!("\n=== nearby_kingdom_count benchmark ===");
+        println!("Iterations: {}", iterations);
+        println!("Total time: {:?}", duration);
+        println!("Average time per call: {:?}", duration / iterations as u32);
+        println!("Calls per second: {:.0}", iterations as f64 / duration.as_secs_f64());
     }
 }
