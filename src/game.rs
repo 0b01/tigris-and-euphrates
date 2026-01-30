@@ -472,6 +472,14 @@ impl TnEGame {
                     pos_top_left.down(),
                     pos_top_left.down().right(),
                 ];
+                
+                // Collect all positions adjacent to the monument for leader eviction check
+                let mut adjacent_positions = Bitboard::new();
+                for pos in positions.iter() {
+                    adjacent_positions |= pos.neighbors();
+                }
+                
+                // Build the monument - flip tiles facedown
                 for pos in positions.iter() {
                     self.board.set_monument(*pos, true);
                     self.board.set_leader(*pos, Leader::None);
@@ -482,6 +490,15 @@ impl TnEGame {
                     monument_type,
                     pos_top_left,
                 });
+
+                // Remove the monument from available monuments
+                self.available_monuments.retain(|m| *m != monument_type);
+
+                // Evict any leaders that are no longer adjacent to temples
+                // (since the monument tiles are now facedown and don't count as temples)
+                for pos in adjacent_positions.iter() {
+                    self.evict_leader_if_not_adjacent_to_temple(pos);
+                }
 
                 None
             }
@@ -1082,14 +1099,11 @@ impl TnEGame {
         }
     }
 
+    /// Check if a position is adjacent to at least one temple (red tile)
+    /// Leaders can only be placed adjacent to temples
     #[must_use]
     fn adjacent_to_temple(&self, pos: Pos) -> bool {
-        for neighbor in pos.neighbors().iter() {
-            if self.board.get_tile_type(neighbor) == TileType::Red {
-                return true;
-            }
-        }
-        false
+        self.board.is_adjacent_to_temple(pos)
     }
 
     fn check_leader_placement(&self, pos: Pos, kingdom_count: [[u8; W]; H]) -> Result<()> {
@@ -1167,15 +1181,14 @@ impl TnEGame {
     }
 
     /// Evict a leader only if it is no longer adjacent to any temple (red tile)
+    /// According to the rules: "If a leader is no longer adjacent to a temple, 
+    /// that leader is returned to the player"
     fn evict_leader_if_not_adjacent_to_temple(&mut self, leader_pos: Pos) {
         if self.board.get_leader(leader_pos) == Leader::None {
             return;
         }
         // Check if leader is still adjacent to at least one temple
-        let still_adjacent = leader_pos.neighbors().iter().any(|neighbor| {
-            self.board.get_tile_type(neighbor) == TileType::Red
-        });
-        if !still_adjacent {
+        if !self.board.is_adjacent_to_temple(leader_pos) {
             self.evict_leader(leader_pos);
         }
     }
@@ -2503,6 +2516,30 @@ impl Board {
             TileType::Black => self.black_tiles.set(pos),
         }
     }
+
+    /// Returns true if the position contains a temple (red tile)
+    #[inline]
+    pub fn is_temple(&self, pos: Pos) -> bool {
+        self.red_tiles.get(pos)
+    }
+
+    /// Returns a bitboard of all temple positions on the board
+    #[inline]
+    pub fn temples(&self) -> Bitboard {
+        self.red_tiles
+    }
+
+    /// Counts temples adjacent to a position (used for revolt strength calculation)
+    #[inline]
+    pub fn count_adjacent_temples(&self, pos: Pos) -> u8 {
+        (pos.neighbors() & self.red_tiles).count_ones()
+    }
+
+    /// Returns true if the position is adjacent to at least one temple
+    #[inline]
+    pub fn is_adjacent_to_temple(&self, pos: Pos) -> bool {
+        !(pos.neighbors() & self.red_tiles).0.is_zero()
+    }
 }
 
 #[repr(u8)]
@@ -2550,14 +2587,27 @@ impl MonumentType {
     }
 }
 
+/// Tile types in Tigris and Euphrates:
+/// - Red = Temple (Priest leader) - Leaders must be placed adjacent to temples
+/// - Blue = Farm (Farmer leader) - Can only be placed on river spaces
+/// - Green = Market (Trader leader) - For collecting treasures
+/// - Black = Settlement (King leader) - Can score for any tile type if no matching leader
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TileType {
     Empty,
+    /// Farm tiles - can only be placed on river spaces, scored by Farmer (blue leader)
     Blue,
+    /// Market tiles - scored by Trader (green leader), triggers treasure collection
     Green,
+    /// Temple tiles - leaders must be adjacent to temples, scored by Priest (red leader)
     Red,
+    /// Settlement tiles - scored by King (black leader), King can also score other colors
     Black,
 }
+
+/// Temple is a red tile in Tigris and Euphrates
+/// Leaders must always be adjacent to at least one temple
+pub const TEMPLE: TileType = TileType::Red;
 
 impl From<u8> for TileType {
     fn from(val: u8) -> Self {
@@ -2581,6 +2631,13 @@ impl TileType {
             TileType::Black => Leader::Black,
             TileType::Empty => Leader::None,
         }
+    }
+
+    /// Returns true if this tile type is a temple (red tile)
+    /// Temples are special because leaders must be adjacent to them
+    #[inline]
+    pub fn is_temple(&self) -> bool {
+        *self == TileType::Red
     }
 }
 
@@ -3316,6 +3373,57 @@ mod tests {
     }
 
     #[test]
+    fn test_monument_removed_from_available() {
+        let mut game = TnEGame::new();
+
+        // Initially, all 6 monument types are available
+        assert_eq!(game.available_monuments.len(), 6);
+        assert!(game.available_monuments.contains(&MonumentType::RedGreen));
+
+        // Build a 2x2 square of red tiles
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+
+        // Build the monument
+        game.process(Action::BuildMonument(MonumentType::RedGreen)).unwrap();
+
+        // The monument should be removed from available monuments
+        assert_eq!(game.available_monuments.len(), 5);
+        assert!(!game.available_monuments.contains(&MonumentType::RedGreen));
+    }
+
+    #[test]
+    fn test_monument_tiles_still_connect_kingdom() {
+        let mut game = TnEGame::new();
+
+        // Build a 2x2 monument
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+        game.process(Action::BuildMonument(MonumentType::RedGreen)).unwrap();
+
+        // Monument tiles should be marked as monuments
+        assert!(game.board.get_monument(pos!(0, 0)));
+        assert!(game.board.get_monument(pos!(0, 1)));
+        assert!(game.board.get_monument(pos!(1, 0)));
+        assert!(game.board.get_monument(pos!(1, 1)));
+
+        // Monument tiles should still be connectable (for kingdom linking)
+        assert!(game.board.is_connectable(pos!(0, 0)));
+        assert!(game.board.is_connectable(pos!(0, 1)));
+        assert!(game.board.is_connectable(pos!(1, 0)));
+        assert!(game.board.is_connectable(pos!(1, 1)));
+    }
+
+    #[test]
     fn test_neighbors() {
         let pos = pos!(1, 1);
         let mut n = Bitboard::new();
@@ -3337,6 +3445,7 @@ mod tests {
             pos: pos!(1, 0),
             leader: Leader::Red,
         }).unwrap();
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red }).unwrap();
 
         game.process(Action::PlaceLeader { pos: pos!(1, 3), leader: Leader::Red }).unwrap();
@@ -3898,5 +4007,73 @@ mod tests {
         
         // After two passes, should be player 2's turn
         assert_eq!(ret.0, Player::Player2);
+    }
+
+    // ==================== TEMPLE TESTS ====================
+
+    #[test]
+    fn test_initial_temples_have_treasures() {
+        let game = TnEGame::new();
+        
+        // The board starts with 10 temples ('t' positions) that have treasures
+        // Check that all treasure positions are also temple (red tile) positions
+        for pos in game.board.treasures.iter() {
+            assert!(game.board.is_temple(pos), 
+                "Treasure at {:?} should be on a temple (red tile)", pos);
+        }
+        
+        // Should have exactly 10 initial treasures
+        assert_eq!(game.board.treasures.count_ones(), 10);
+    }
+
+    #[test]
+    fn test_board_temple_helpers() {
+        let game = TnEGame::new();
+        
+        // Test is_temple - initial temples should be recognized
+        // Position (1,1) is a temple based on the board: ".t..x.......x..t"
+        assert!(game.board.is_temple(pos!(1, 1)));
+        
+        // An empty position should not be a temple
+        assert!(!game.board.is_temple(pos!(0, 0)));
+        
+        // Test count_adjacent_temples
+        // Position adjacent to the temple at (1,1) should have at least 1 adjacent temple
+        assert!(game.board.count_adjacent_temples(pos!(0, 1)) >= 1);
+        assert!(game.board.count_adjacent_temples(pos!(1, 0)) >= 1);
+        assert!(game.board.count_adjacent_temples(pos!(1, 2)) >= 1);
+        assert!(game.board.count_adjacent_temples(pos!(2, 1)) >= 1);
+    }
+
+    #[test]
+    fn test_leader_must_be_adjacent_to_temple() {
+        let mut game = TnEGame::new();
+        
+        // Position (0,0) is NOT adjacent to any temple
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(0, 0),
+            leader: Leader::Red,
+        });
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceLeaderNotAdjacentToTemple);
+        
+        // Position (0,1) IS adjacent to the temple at (1,1)
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        });
+        assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn test_temple_tile_type_helper() {
+        // Test the is_temple method on TileType
+        assert!(TileType::Red.is_temple());
+        assert!(!TileType::Blue.is_temple());
+        assert!(!TileType::Green.is_temple());
+        assert!(!TileType::Black.is_temple());
+        assert!(!TileType::Empty.is_temple());
+        
+        // TEMPLE constant should be Red
+        assert_eq!(TEMPLE, TileType::Red);
     }
 }
