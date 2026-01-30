@@ -131,6 +131,15 @@ impl minimax::Game for TigrisAndEuphrates {
     fn zobrist_hash(state: &Self::S) -> u64 {
         compute_zobrist_hash(state)
     }
+
+    fn same_player_continues(state: &Self::S) -> bool {
+        // In T&E, the same player moves again if:
+        // 1. It's still their turn (2 actions per turn)
+        // 2. They have pending conflict resolution
+        // We check by comparing last_action_player with the player whose turn it is
+        state.last_action_player == state.next_player() 
+            && state.last_action_player != Player::None
+    }
 }
 
 /// Heuristic scoring for move ordering.
@@ -141,35 +150,77 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
         Action::WarSelectLeader(_) => 1000,
         Action::AddSupport(n) => 900 + (*n as i16), // Higher support is often better
         
-        // Tile placements that score points are good
-        Action::PlaceTile { pos: _, tile_type } => {
+        // Tile placements - prioritize tiles that will SCORE POINTS
+        Action::PlaceTile { pos, tile_type } => {
             let current_player = state.next_player();
+            let opponent = match current_player {
+                Player::Player1 => Player::Player2,
+                Player::Player2 => Player::Player1,
+                Player::None => Player::None,
+            };
             let player_state = state.players.get(current_player);
+            let opponent_state = state.players.get(opponent);
             let leader = match tile_type {
                 TileType::Red => Leader::Red,
                 TileType::Blue => Leader::Blue,
                 TileType::Green => Leader::Green,
                 TileType::Black => Leader::Black,
-                TileType::Empty => return 100,
+                TileType::Empty => return 50,
             };
             
-            // Check if we have a matching leader that could score
-            if player_state.get_leader(leader).is_some() {
-                // Bonus: tiles that could join to our leader's kingdom are very valuable
-                500
+            let connectable = state.board.connectable_bitboard();
+            let pos_neighbors = pos.neighbors();
+            
+            // Check if OPPONENT has a matching leader that would score from this tile
+            let opponent_would_score = if let Some(opp_leader_pos) = opponent_state.get_leader(leader) {
+                let opp_kingdom = state.board.find_kingdom_map_fast(opp_leader_pos, connectable);
+                (pos_neighbors & opp_kingdom).count_ones() > 0
+            } else {
+                false
+            };
+            
+            // If this tile would score for opponent but not for us, it's terrible!
+            if opponent_would_score && player_state.get_leader(leader).is_none() {
+                return -100;  // Very bad - scores for opponent, not us
+            }
+            
+            // Check if we have a matching leader on the board
+            if let Some(leader_pos) = player_state.get_leader(leader) {
+                // Check if this tile would be in the same kingdom as our leader
+                let leader_kingdom = state.board.find_kingdom_map_fast(leader_pos, connectable);
+                
+                // Check if pos is adjacent to the kingdom (would connect)
+                if leader_kingdom.get(*pos) {
+                    // Already in kingdom (shouldn't happen for new tile, but check)
+                    700
+                } else if (pos_neighbors & leader_kingdom).count_ones() > 0 {
+                    // Adjacent to leader's kingdom - THIS TILE WILL SCORE!
+                    800
+                } else {
+                    // We have the leader but tile wouldn't connect - still might be useful
+                    // for expanding toward the leader later
+                    let dist = pos.manhattan_distance(leader_pos);
+                    200 - dist.min(10) as i16
+                }
             } else if tile_type == &TileType::Red {
                 // Red tiles are useful for revolt defense even without a leader
                 300
             } else {
-                // Other tiles without matching leaders
-                200
+                // No matching leader - this tile won't score for us
+                // Very low priority unless it's setting up for later
+                100
             }
         }
         
         // Leader placement - valuable, especially early game
-        Action::PlaceLeader { pos: _, leader } => {
+        Action::PlaceLeader { pos, leader } => {
             let current_player = state.next_player();
             let player_state = state.players.get(current_player);
+            
+            // Don't place if leader is already on board (shouldn't happen, but safety)
+            if player_state.get_leader(*leader).is_some() {
+                return -100;
+            }
             
             // Prioritize placing leaders in colors where we're weak
             let score = match leader {
@@ -180,30 +231,36 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
                 Leader::None => 0,
             };
             
+            // Check if position has nearby red tiles (revolt defense)
+            let neighbors = pos.neighbors();
+            let nearby_red = (neighbors & state.board.red_tiles).count_ones();
+            
             // Lower score = more need for that color = higher priority
-            600 - (score as i16 * 5)
+            // Bonus for positions with good revolt defense
+            650 - (score as i16 * 5) + (nearby_red as i16 * 20)
         }
         
-        // Withdrawing leaders - sometimes necessary but usually not the best move
-        Action::WithdrawLeader(_) => 50,
+        // Withdrawing leaders - RARELY good. Strong negative priority.
+        // Only search these last since they usually waste actions.
+        Action::WithdrawLeader(_) => -50,
         
         // Catastrophes can be very strategic
-        Action::PlaceCatastrophe(_) => 400,
+        Action::PlaceCatastrophe(_) => 450,
         
         // Treasures are valuable
         Action::TakeTreasure(_) => 800,
         
         // Monuments can be very powerful
-        Action::BuildMonument(_) => 700,
+        Action::BuildMonument(_) => 750,
         
         // Declining a monument is usually suboptimal but valid
-        Action::DeclineMonument => 50,
+        Action::DeclineMonument => 30,
         
         // Replacing tiles is a minor action
         Action::ReplaceTile(_) => 100,
         
-        // Pass is usually the worst option
-        Action::Pass => 0,
+        // Pass is usually the worst option (but better than wasting moves)
+        Action::Pass => 10,
     }
 }
 
@@ -326,8 +383,22 @@ impl PlayerAction {
                 }
             }
             PlayerAction::TakeTreasure(ts) => {
-                moves.push(Action::TakeTreasure(ts[0]));
-                moves.push(Action::TakeTreasure(ts[1]));
+                // Must take border treasures first according to the rules
+                let border_treasures: Vec<_> = ts.iter()
+                    .filter(|t| crate::game::SPECIAL_BORDER_POSITIONS.get(**t))
+                    .collect();
+                
+                if !border_treasures.is_empty() {
+                    // Only generate moves for border treasures
+                    for t in border_treasures {
+                        moves.push(Action::TakeTreasure(*t));
+                    }
+                } else {
+                    // No border treasures, can take any
+                    for t in ts.iter() {
+                        moves.push(Action::TakeTreasure(*t));
+                    }
+                }
             }
             PlayerAction::BuildMonument(_, types) => {
                 for t in types {
@@ -357,10 +428,13 @@ impl minimax::Evaluator for Evaluator {
         let s1 = state.players.get(Player::Player1).get_eval(state);
         let s2 = state.players.get(Player::Player2).get_eval(state);
 
-        if state.last_action_player == Player::Player1 {
-            s2 - s1
-        } else {
+        // Standard negamax expects: positive = good for player to move
+        // Return value from perspective of player to move
+        let next = state.next_player();
+        if next == Player::Player1 {
             s1 - s2
+        } else {
+            s2 - s1
         }
     }
 }
@@ -393,10 +467,12 @@ impl minimax::Evaluator for SimpleEvaluator {
         let s1 = Self::simple_eval(state.players.get(Player::Player1));
         let s2 = Self::simple_eval(state.players.get(Player::Player2));
 
-        if state.last_action_player == Player::Player1 {
-            s2 - s1
-        } else {
+        // Standard negamax: positive = good for player to move
+        let next = state.next_player();
+        if next == Player::Player1 {
             s1 - s2
+        } else {
+            s2 - s1
         }
     }
 }

@@ -597,9 +597,17 @@ async fn run(mut game: TnEGame, self_play: bool) {
             screenshot("screenshot.png");
         }
 
-        // if the next player is the AI, let it play, could take a while
-        if game.next_player() == Player::Player2 && !self_play {
-            let m = ai_strategy.choose_move(&mut game);
+        // AI plays for Player 2, or both players if self_play mode
+        let should_ai_play = if self_play {
+            // In self_play mode, AI plays for both players
+            true
+        } else {
+            // In normal mode, AI only plays for Player 2
+            game.next_player() == Player::Player2
+        };
+
+        if should_ai_play {
+            let m = ai_strategy.choose_move(&game);
             if m.is_none() {
                 // take a screenshot
                 screenshot("no_move.png");
@@ -668,6 +676,14 @@ pub fn history_viewer(games: Vec<TnEGame>) {
 }
 
 pub fn play(game: TnEGame) {
+    play_with_options(game, false);
+}
+
+pub fn play_self_play(game: TnEGame) {
+    play_with_options(game, true);
+}
+
+fn play_with_options(game: TnEGame, self_play: bool) {
     let small = Image::from_file_with_format(include_bytes!("../assets/icon_small.png"), None)
         .bytes
         .leak()
@@ -695,7 +711,7 @@ pub fn play(game: TnEGame) {
             icon: Some(icon),
             ..Default::default()
         },
-        run(game, false),
+        run(game, self_play),
     );
 }
 

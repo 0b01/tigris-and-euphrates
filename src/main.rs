@@ -33,6 +33,8 @@ fn main() {
         #[cfg(feature = "game")]
         "play" => visualizer::play(TnEGame::new()),
         #[cfg(feature = "game")]
+        "selfplay" => visualizer::play_self_play(TnEGame::new()),
+        #[cfg(feature = "game")]
         "view" => {
             let path = std::env::args().nth(2).expect("no path");
             view_history_json(&path);
