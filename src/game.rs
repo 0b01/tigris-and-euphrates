@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use once_cell::sync::Lazy;
 pub const W: usize = 16;
 pub const H: usize = 11;
+
 #[macro_export]
 macro_rules! pos {
     // compile time convert 1A to 00
@@ -14,6 +15,20 @@ macro_rules! pos {
         Pos { x: $x as u8, y: $y as u8 }
     };
 }
+
+/// Special border positions where treasures must be taken first
+/// According to the rules: "If there are treasures on a special border space,
+/// the player must take treasures from those spaces first"
+/// These are the corner treasure positions marked with special borders on the board
+pub static SPECIAL_BORDER_POSITIONS: Lazy<Bitboard> = Lazy::new(|| {
+    let mut bb = Bitboard::new();
+    // Based on the standard T&E board, the special border positions are:
+    // (1, 15) - top right corner temple
+    // (8, 14) - bottom right area temple
+    bb.set(pos!(1, 15));
+    bb.set(pos!(8, 14));
+    bb
+});
 
 static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut mask = [[Bitboard::new(); W]; H];
@@ -281,6 +296,7 @@ impl TnEGame {
             | (GameState::TakeTreasure, Action::TakeTreasure { .. })
             | (GameState::WarSelectLeader, Action::WarSelectLeader(_))
             | (GameState::BuildMonument, Action::BuildMonument(_))
+            | (GameState::BuildMonument, Action::DeclineMonument)
             | (GameState::AddSupport, Action::AddSupport(_)) => true,
             _ => false,
         };
@@ -293,6 +309,15 @@ impl TnEGame {
             Action::TakeTreasure(pos) => {
                 if !self.board.get_treasure(pos) {
                     return Err(Error::NoTreasure);
+                }
+                // Check if player is trying to take a non-border treasure when a border one is available
+                let PlayerAction::TakeTreasure(available_treasures) = self.next_action() else {
+                    unreachable!()
+                };
+                let is_taking_border = SPECIAL_BORDER_POSITIONS.get(pos);
+                let has_border_treasure = available_treasures.iter().any(|t| SPECIAL_BORDER_POSITIONS.get(*t));
+                if has_border_treasure && !is_taking_border {
+                    return Err(Error::MustTakeBorderTreasureFirst);
                 }
             }
             Action::AddSupport(n) => {
@@ -411,6 +436,10 @@ impl TnEGame {
                 if self.board.get_leader(pos) == Leader::None {
                     return Err(Error::CannotWithdrawLeader);
                 }
+                // Check that the current player owns this leader
+                if self.board.get_player(pos) != current_player {
+                    return Err(Error::CannotMoveOtherLeader);
+                }
             }
             Action::ReplaceTile(Tiles {
                 red,
@@ -443,6 +472,9 @@ impl TnEGame {
                     return Err(Error::MonumentNot2x2);
                 }
             }
+            Action::DeclineMonument => {
+                // No validation needed - player is allowed to decline
+            }
         }
 
         Ok(())
@@ -468,6 +500,14 @@ impl TnEGame {
                     pos_top_left.down(),
                     pos_top_left.down().right(),
                 ];
+                
+                // Collect all positions adjacent to the monument for leader eviction check
+                let mut adjacent_positions = Bitboard::new();
+                for pos in positions.iter() {
+                    adjacent_positions |= pos.neighbors();
+                }
+                
+                // Build the monument - flip tiles facedown
                 for pos in positions.iter() {
                     self.board.set_monument(*pos, true);
                     self.board.set_leader(*pos, Leader::None);
@@ -479,6 +519,19 @@ impl TnEGame {
                     pos_top_left,
                 });
 
+                // Remove the monument from available monuments
+                self.available_monuments.retain(|m| *m != monument_type);
+
+                // Evict any leaders that are no longer adjacent to temples
+                // (since the monument tiles are now facedown and don't count as temples)
+                for pos in adjacent_positions.iter() {
+                    self.evict_leader_if_not_adjacent_to_temple(pos);
+                }
+
+                None
+            }
+            Action::DeclineMonument => {
+                // Player chose not to build a monument - just continue
                 None
             }
             Action::TakeTreasure(pos) => {
@@ -539,7 +592,7 @@ impl TnEGame {
 
                 if c.all_sent() {
                     if c.is_internal {
-                        // internal conflict
+                        // internal conflict (revolt)
                         let attacker_points = c.attacker_base_strength + c.attacker_support;
                         let defender_points = c.defender_base_strength + c.defender_support;
 
@@ -549,10 +602,11 @@ impl TnEGame {
                             (defender, attacker, c.attacker_pos)
                         };
 
-                        // give winner 1 point
+                        // In a revolt, winner always gets 1 RED point (amulet)
+                        // because revolts are fought with temples (red tiles)
                         self.players
                             .get_mut(winner)
-                            .add_score(c.conflict_leader.as_tile_type());
+                            .add_score(TileType::Red);
 
                         self.evict_leader(loser_pos);
                     } else {
@@ -566,21 +620,28 @@ impl TnEGame {
                             (defender, attacker, c.attacker_pos)
                         };
 
+                        let conflict_leader = c.conflict_leader;
                         let tiles_to_remove = self
                             .board
-                            .find_disintegrable_tiles(loser_pos, c.conflict_leader.as_tile_type());
+                            .find_disintegrable_tiles(loser_pos, conflict_leader.as_tile_type());
 
                         // remove loser
-                        self.players.get_mut(loser).set_leader(c.conflict_leader, None);
+                        self.players.get_mut(loser).set_leader(conflict_leader, None);
                         self.board.set_leader(loser_pos, Leader::None);
                         self.board.set_player(loser_pos, Player::None);
                         // give winner 1 point
                         self.players
                             .get_mut(winner)
-                            .add_score(c.conflict_leader.as_tile_type());
+                            .add_score(conflict_leader.as_tile_type());
 
                         // disintegrate tiles
                         let points = tiles_to_remove.count_ones() as u8;
+                        // Collect positions adjacent to removed tiles for later temple check
+                        let mut positions_to_check = Bitboard::new();
+                        for pos in tiles_to_remove.iter() {
+                            positions_to_check |= pos.neighbors();
+                        }
+                        
                         for pos in tiles_to_remove.iter() {
                             self.board.set_tile_type(pos, TileType::Empty);
                             self.board.set_leader(pos, Leader::None);
@@ -588,16 +649,19 @@ impl TnEGame {
                         }
                         self.players
                             .get_mut(winner)
-                            .add_score_by(c.conflict_leader.as_tile_type(), points);
+                            .add_score_by(conflict_leader.as_tile_type(), points);
 
-                        let leader = c.conflict_leader;
+                        // After removing tiles, check if any leaders are no longer adjacent to temples
+                        for pos in positions_to_check.iter() {
+                            self.evict_leader_if_not_adjacent_to_temple(pos);
+                        }
 
                         // remove the leader we just resolved from external conflicts
                         self.external_conflict
                             .as_mut()
                             .unwrap()
                             .conflicts
-                            .retain(|con| con.conflict_leader != leader);
+                            .retain(|con| con.conflict_leader != conflict_leader);
 
                         // credit unification cell
                         let ExternalConflict {
@@ -675,8 +739,9 @@ impl TnEGame {
 
                 curr_player.num_catastrophes -= 1;
 
+                // Evict leaders only if they are no longer adjacent to any temple
                 for neighbor in to.neighbors().iter() {
-                    self.evict_leader(neighbor);
+                    self.evict_leader_if_not_adjacent_to_temple(neighbor);
                 }
 
                 Some(GameState::Normal)
@@ -732,6 +797,15 @@ impl TnEGame {
                         unification_tile_pos: to,
                         unification_tile_type: tile_type,
                     });
+
+                    // Remove the tile from player's hand
+                    match tile_type {
+                        TileType::Blue => curr_player.hand_blue -= 1,
+                        TileType::Green => curr_player.hand_green -= 1,
+                        TileType::Red => curr_player.hand_red -= 1,
+                        TileType::Black => curr_player.hand_black -= 1,
+                        TileType::Empty => unreachable!(),
+                    }
 
                     // attacker can select which leader to resolve first
                     self.play_action_stack.push((
@@ -981,7 +1055,7 @@ impl TnEGame {
 
     fn check_treasure_at(&self, pos: Pos, extra_actions: &mut Vec<(Player, PlayerAction, GameState)>) {
         // check if treasure is available for taking
-        // TODO: must take corner treasures first
+        // Border treasure priority is enforced in validate_action
         let kingdom = self.board.find_kingdom(pos, &mut Bitboard::new());
         if kingdom.treasures.iter().filter(|i| i.is_some()).count() > 1
             && kingdom.green_leader.is_some()
@@ -1058,14 +1132,11 @@ impl TnEGame {
         }
     }
 
+    /// Check if a position is adjacent to at least one temple (red tile)
+    /// Leaders can only be placed adjacent to temples
     #[must_use]
     fn adjacent_to_temple(&self, pos: Pos) -> bool {
-        for neighbor in pos.neighbors().iter() {
-            if self.board.get_tile_type(neighbor) == TileType::Red {
-                return true;
-            }
-        }
-        false
+        self.board.is_adjacent_to_temple(pos)
     }
 
     fn check_leader_placement(&self, pos: Pos, kingdom_count: [[u8; W]; H]) -> Result<()> {
@@ -1139,6 +1210,19 @@ impl TnEGame {
                 .set_leader(self.board.get_leader(pos), None);
             self.board.set_leader(pos, Leader::None);
             self.board.set_player(pos, Player::None)
+        }
+    }
+
+    /// Evict a leader only if it is no longer adjacent to any temple (red tile)
+    /// According to the rules: "If a leader is no longer adjacent to a temple, 
+    /// that leader is returned to the player"
+    fn evict_leader_if_not_adjacent_to_temple(&mut self, leader_pos: Pos) {
+        if self.board.get_leader(leader_pos) == Leader::None {
+            return;
+        }
+        // Check if leader is still adjacent to at least one temple
+        if !self.board.is_adjacent_to_temple(leader_pos) {
+            self.evict_leader(leader_pos);
         }
     }
 }
@@ -1216,6 +1300,8 @@ pub enum Action {
     WarSelectLeader(Leader),
     AddSupport(u8),
     BuildMonument(MonumentType),
+    /// Decline to build a monument when offered the opportunity
+    DeclineMonument,
     PlaceTile {
         pos: Pos,
         tile_type: TileType,
@@ -1243,6 +1329,7 @@ pub enum Action {
 /// PlaceCatastrophe, 11 * 16
 /// TakeTreasure, 11 * 16
 /// BuildMonument, 6
+/// DeclineMonument, 1
 /// AddSupport, 7
 /// SelectLeader, 4
 /// Pass, 1
@@ -1284,14 +1371,17 @@ impl Into<usize> for Action {
             Action::BuildMonument(ty) => {
                 11 * H * W + (ty as usize)
             }
+            Action::DeclineMonument => {
+                11 * H * W + 6
+            }
             Action::AddSupport(n) => {
-                11 * H * W + 6 + (n as usize)
+                11 * H * W + 6 + 1 + (n as usize)
             }
             Action::WarSelectLeader(leader) => {
-                11 * H * W + 6 + 7 + (leader as usize - 1)
+                11 * H * W + 6 + 1 + 7 + (leader as usize - 1)
             }
             Action::Pass => {
-                11 * H * W + 6 + 7 + 4
+                11 * H * W + 6 + 1 + 7 + 4
             }
             Action::ReplaceTile(_) => unreachable!(),
         }
@@ -1325,20 +1415,22 @@ impl From<usize> for Action {
                     4 => Action::BuildMonument(MonumentType::BlackGreen),
                     5 => Action::BuildMonument(MonumentType::BlackBlue),
 
-                    6 => Action::AddSupport(idx as u8 - 6),
-                    7 => Action::AddSupport(idx as u8 - 6),
-                    8 => Action::AddSupport(idx as u8 - 6),
-                    9 => Action::AddSupport(idx as u8 - 6),
-                    10 => Action::AddSupport(idx as u8 - 6),
-                    11 => Action::AddSupport(idx as u8 - 6),
-                    12 => Action::AddSupport(idx as u8 - 6),
+                    6 => Action::DeclineMonument,
 
-                    13 => Action::WarSelectLeader(Leader::Blue),
-                    14 => Action::WarSelectLeader(Leader::Green),
-                    15 => Action::WarSelectLeader(Leader::Red),
-                    16 => Action::WarSelectLeader(Leader::Black),
+                    7 => Action::AddSupport(idx as u8 - 7),
+                    8 => Action::AddSupport(idx as u8 - 7),
+                    9 => Action::AddSupport(idx as u8 - 7),
+                    10 => Action::AddSupport(idx as u8 - 7),
+                    11 => Action::AddSupport(idx as u8 - 7),
+                    12 => Action::AddSupport(idx as u8 - 7),
+                    13 => Action::AddSupport(idx as u8 - 7),
 
-                    17 => Action::Pass,
+                    14 => Action::WarSelectLeader(Leader::Blue),
+                    15 => Action::WarSelectLeader(Leader::Green),
+                    16 => Action::WarSelectLeader(Leader::Red),
+                    17 => Action::WarSelectLeader(Leader::Black),
+
+                    18 => Action::Pass,
 
                     _ => panic!(),
                 }
@@ -1361,7 +1453,11 @@ impl Tiles {
 
     #[must_use]
     fn draw_to_6(&mut self, player: &mut PlayerState) -> Option<()> {
-        let n = 6 - player.hand_sum();
+        let hand_sum = player.hand_sum();
+        if hand_sum >= 6 {
+            return Some(()); // Already have 6 or more tiles
+        }
+        let n = 6 - hand_sum;
         self.player_draw(player, n)
     }
 
@@ -2292,6 +2388,11 @@ impl Board {
         let mut ret = Bitboard::new();
         let mut visited = Bitboard::new();
         let mut stack = loser_pos.mask();
+        
+        // In a priest war (red leader conflict), temples adjacent to leaders
+        // or bearing treasures are protected and cannot be removed
+        let is_priest_war = tile_type == TileType::Red;
+        
         while let Some(pos) = stack.pop() {
             if visited.get(pos) {
                 continue;
@@ -2304,14 +2405,21 @@ impl Board {
                 }
             }
 
-            // skip any red tiles that are next to a leader
-            let nearby_leader = pos.neighbors().iter().any(|pos| {
-                self.get_leader(pos) != Leader::None
-            });
-            let leader_near_red = self.get_tile_type(pos) == TileType::Red && nearby_leader;
-            // can't destroy monument tiles
+            // Check if this tile should be protected (only in priest wars)
+            let is_protected = if is_priest_war && self.get_tile_type(pos) == TileType::Red {
+                // Temple is protected if it has a treasure or is adjacent to any leader
+                let has_treasure = self.treasures.get(pos);
+                let nearby_leader = pos.neighbors().iter().any(|neighbor_pos| {
+                    self.get_leader(neighbor_pos) != Leader::None
+                });
+                has_treasure || nearby_leader
+            } else {
+                false
+            };
+            
+            // can't destroy monument tiles or protected temples
             if self.get_tile_type(pos) == tile_type
-                && !leader_near_red
+                && !is_protected
                 && !self.get_monument(pos)
             {
                 ret.set(pos);
@@ -2449,6 +2557,30 @@ impl Board {
             TileType::Black => self.black_tiles.set(pos),
         }
     }
+
+    /// Returns true if the position contains a temple (red tile)
+    #[inline]
+    pub fn is_temple(&self, pos: Pos) -> bool {
+        self.red_tiles.get(pos)
+    }
+
+    /// Returns a bitboard of all temple positions on the board
+    #[inline]
+    pub fn temples(&self) -> Bitboard {
+        self.red_tiles
+    }
+
+    /// Counts temples adjacent to a position (used for revolt strength calculation)
+    #[inline]
+    pub fn count_adjacent_temples(&self, pos: Pos) -> u8 {
+        (pos.neighbors() & self.red_tiles).count_ones()
+    }
+
+    /// Returns true if the position is adjacent to at least one temple
+    #[inline]
+    pub fn is_adjacent_to_temple(&self, pos: Pos) -> bool {
+        !(pos.neighbors() & self.red_tiles).0.is_zero()
+    }
 }
 
 #[repr(u8)]
@@ -2496,14 +2628,27 @@ impl MonumentType {
     }
 }
 
+/// Tile types in Tigris and Euphrates:
+/// - Red = Temple (Priest leader) - Leaders must be placed adjacent to temples
+/// - Blue = Farm (Farmer leader) - Can only be placed on river spaces
+/// - Green = Market (Trader leader) - For collecting treasures
+/// - Black = Settlement (King leader) - Can score for any tile type if no matching leader
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TileType {
     Empty,
+    /// Farm tiles - can only be placed on river spaces, scored by Farmer (blue leader)
     Blue,
+    /// Market tiles - scored by Trader (green leader), triggers treasure collection
     Green,
+    /// Temple tiles - leaders must be adjacent to temples, scored by Priest (red leader)
     Red,
+    /// Settlement tiles - scored by King (black leader), King can also score other colors
     Black,
 }
+
+/// Temple is a red tile in Tigris and Euphrates
+/// Leaders must always be adjacent to at least one temple
+pub const TEMPLE: TileType = TileType::Red;
 
 impl From<u8> for TileType {
     fn from(val: u8) -> Self {
@@ -2527,6 +2672,13 @@ impl TileType {
             TileType::Black => Leader::Black,
             TileType::Empty => Leader::None,
         }
+    }
+
+    /// Returns true if this tile type is a temple (red tile)
+    /// Temples are special because leaders must be adjacent to them
+    #[inline]
+    pub fn is_temple(&self) -> bool {
+        *self == TileType::Red
     }
 }
 
@@ -2597,6 +2749,8 @@ pub enum Error {
     AlreadySentSupport,
     InvalidAction(GameState, Action),
     NoTreasure,
+    /// Must take treasure from special border space first
+    MustTakeBorderTreasureFirst,
     GameOver,
     CannotPlaceOverTreasure,
     LeaderAlreadyPlaced,
@@ -3040,6 +3194,52 @@ mod tests {
     }
 
     #[test]
+    fn external_conflict_removes_tile_from_hand() {
+        let mut game = TnEGame::new();
+
+        // player 1 place a leader and a tile
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        })
+        .unwrap();
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 2),
+            tile_type: TileType::Red,
+        })
+        .unwrap();
+
+        // player 2 places a leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 3),
+            leader: Leader::Red,
+        })
+        .unwrap();
+        
+        // Ensure player 2 has exactly 1 red tile and record hand size
+        game.players.get_mut(Player::Player2).hand_red = 1;
+        game.players.get_mut(Player::Player2).hand_blue = 2;
+        game.players.get_mut(Player::Player2).hand_green = 2;
+        game.players.get_mut(Player::Player2).hand_black = 1;
+        
+        let hand_before = game.players.get(Player::Player2).hand_sum();
+        let red_before = game.players.get(Player::Player2).hand_red;
+        
+        // player 2 places a tile joining two kingdoms - triggers external conflict
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 1),
+            tile_type: TileType::Red,
+        })
+        .unwrap();
+        
+        // Verify the tile was removed from hand
+        assert!(game.external_conflict.is_some());
+        assert_eq!(game.players.get(Player::Player2).hand_red, red_before - 1);
+        assert_eq!(game.players.get(Player::Player2).hand_sum(), hand_before - 1);
+    }
+
+    #[test]
     fn place_tile_does_not_trigger_external_conflict() {
         let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
@@ -3216,6 +3416,57 @@ mod tests {
     }
 
     #[test]
+    fn test_monument_removed_from_available() {
+        let mut game = TnEGame::new();
+
+        // Initially, all 6 monument types are available
+        assert_eq!(game.available_monuments.len(), 6);
+        assert!(game.available_monuments.contains(&MonumentType::RedGreen));
+
+        // Build a 2x2 square of red tiles
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+
+        // Build the monument
+        game.process(Action::BuildMonument(MonumentType::RedGreen)).unwrap();
+
+        // The monument should be removed from available monuments
+        assert_eq!(game.available_monuments.len(), 5);
+        assert!(!game.available_monuments.contains(&MonumentType::RedGreen));
+    }
+
+    #[test]
+    fn test_monument_tiles_still_connect_kingdom() {
+        let mut game = TnEGame::new();
+
+        // Build a 2x2 monument
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+        game.process(Action::BuildMonument(MonumentType::RedGreen)).unwrap();
+
+        // Monument tiles should be marked as monuments
+        assert!(game.board.get_monument(pos!(0, 0)));
+        assert!(game.board.get_monument(pos!(0, 1)));
+        assert!(game.board.get_monument(pos!(1, 0)));
+        assert!(game.board.get_monument(pos!(1, 1)));
+
+        // Monument tiles should still be connectable (for kingdom linking)
+        assert!(game.board.is_connectable(pos!(0, 0)));
+        assert!(game.board.is_connectable(pos!(0, 1)));
+        assert!(game.board.is_connectable(pos!(1, 0)));
+        assert!(game.board.is_connectable(pos!(1, 1)));
+    }
+
+    #[test]
     fn test_neighbors() {
         let pos = pos!(1, 1);
         let mut n = Bitboard::new();
@@ -3237,6 +3488,7 @@ mod tests {
             pos: pos!(1, 0),
             leader: Leader::Red,
         }).unwrap();
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
         game.process(Action::PlaceTile { pos: pos!(0, 3), tile_type: TileType::Red }).unwrap();
 
         game.process(Action::PlaceLeader { pos: pos!(1, 3), leader: Leader::Red }).unwrap();
@@ -3375,6 +3627,76 @@ mod tests {
         assert_eq!(ret.unwrap_err(), Error::CannotPlaceCatastropheOnMonument);
     }
 
+    #[test]
+    fn test_catastrophe_only_evicts_leader_without_adjacent_temple() {
+        let mut game = TnEGame::new();
+        
+        // Place a red tile (temple) at (0,0)
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 0),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Place a leader adjacent to both the new temple and the pre-existing temple at (1,1)
+        // Position (1,0) is adjacent to both (0,0) and (1,1)
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        }).unwrap();
+        
+        // Player 2's turn
+        game.process(Action::Pass).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Now Player 1 places catastrophe on (0,0) - destroying the temple
+        // Leader at (1,0) should NOT be evicted because it's still adjacent to temple at (1,1)
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
+        assert!(ret.is_ok());
+        assert!(game.board.get_catastrophe(pos!(0, 0)));
+        // Leader should still be at (1,0) because (1,1) is a temple adjacent to it
+        assert_eq!(game.board.get_leader(pos!(1, 0)), Leader::Red);
+    }
+
+    #[test]
+    fn test_catastrophe_evicts_leader_when_no_adjacent_temple() {
+        let mut game = TnEGame::new();
+        
+        // Place a red tile (temple) at (5,0) - this is not on river
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile {
+            pos: pos!(5, 0),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Place another red tile at (5,1) to have two adjacent temples for the leader
+        game.process(Action::PlaceTile {
+            pos: pos!(5, 1),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Player 2's turn - pass
+        game.process(Action::Pass).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Place a leader at (4,0) - adjacent to temple at (5,0)
+        // But (4,0) is also adjacent to the river/nothing else
+        game.process(Action::PlaceLeader {
+            pos: pos!(4, 0),
+            leader: Leader::Red,
+        }).unwrap();
+        
+        // Place catastrophe at (5,0) - destroying one adjacent temple
+        // Leader at (4,0) should be evicted because there's no other temple adjacent
+        // (4,0)'s neighbors are (3,0)=river, (5,0)=catastrophe target, (4,1)=empty
+        let ret = game.process(Action::PlaceCatastrophe(pos!(5, 0)));
+        assert!(ret.is_ok());
+        assert!(game.board.get_catastrophe(pos!(5, 0)));
+        // Leader should be removed because (5,0) was the only adjacent temple
+        assert_eq!(game.board.get_leader(pos!(4, 0)), Leader::None);
+        assert!(game.players.0[0].placed_red_leader.is_none());
+    }
+
     // ==================== RIVER/BLUE TILE TESTS ====================
 
     #[test]
@@ -3456,7 +3778,11 @@ mod tests {
         }).unwrap();
         game.process(Action::Pass).unwrap();
         
-        // Withdraw the leader
+        // Player 2's turn - pass both actions
+        game.process(Action::Pass).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Now it's Player 1's turn again - withdraw the leader
         let ret = game.process(Action::WithdrawLeader(pos!(0, 1)));
         assert!(ret.is_ok());
         assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::None);
@@ -3470,6 +3796,22 @@ mod tests {
         // Try to withdraw from empty position
         let ret = game.process(Action::WithdrawLeader(pos!(0, 0)));
         assert_eq!(ret.unwrap_err(), Error::CannotWithdrawLeader);
+    }
+
+    #[test]
+    fn test_cannot_withdraw_opponent_leader() {
+        let mut game = TnEGame::new();
+        
+        // Player 1 places a leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 tries to withdraw Player 1's leader - this should fail
+        let ret = game.process(Action::WithdrawLeader(pos!(0, 1)));
+        assert_eq!(ret.unwrap_err(), Error::CannotMoveOtherLeader);
     }
 
     // ==================== WAR OUTCOMES ====================
@@ -3708,5 +4050,180 @@ mod tests {
         
         // After two passes, should be player 2's turn
         assert_eq!(ret.0, Player::Player2);
+    }
+
+    // ==================== TEMPLE TESTS ====================
+
+    #[test]
+    fn test_initial_temples_have_treasures() {
+        let game = TnEGame::new();
+        
+        // The board starts with 10 temples ('t' positions) that have treasures
+        // Check that all treasure positions are also temple (red tile) positions
+        for pos in game.board.treasures.iter() {
+            assert!(game.board.is_temple(pos), 
+                "Treasure at {:?} should be on a temple (red tile)", pos);
+        }
+        
+        // Should have exactly 10 initial treasures
+        assert_eq!(game.board.treasures.count_ones(), 10);
+    }
+
+    #[test]
+    fn test_board_temple_helpers() {
+        let game = TnEGame::new();
+        
+        // Test is_temple - initial temples should be recognized
+        // Position (1,1) is a temple based on the board: ".t..x.......x..t"
+        assert!(game.board.is_temple(pos!(1, 1)));
+        
+        // An empty position should not be a temple
+        assert!(!game.board.is_temple(pos!(0, 0)));
+        
+        // Test count_adjacent_temples
+        // Position adjacent to the temple at (1,1) should have at least 1 adjacent temple
+        assert!(game.board.count_adjacent_temples(pos!(0, 1)) >= 1);
+        assert!(game.board.count_adjacent_temples(pos!(1, 0)) >= 1);
+        assert!(game.board.count_adjacent_temples(pos!(1, 2)) >= 1);
+        assert!(game.board.count_adjacent_temples(pos!(2, 1)) >= 1);
+    }
+
+    #[test]
+    fn test_leader_must_be_adjacent_to_temple() {
+        let mut game = TnEGame::new();
+        
+        // Position (0,0) is NOT adjacent to any temple
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(0, 0),
+            leader: Leader::Red,
+        });
+        assert_eq!(ret.unwrap_err(), Error::CannotPlaceLeaderNotAdjacentToTemple);
+        
+        // Position (0,1) IS adjacent to the temple at (1,1)
+        let ret = game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        });
+        assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn test_temple_tile_type_helper() {
+        // Test the is_temple method on TileType
+        assert!(TileType::Red.is_temple());
+        assert!(!TileType::Blue.is_temple());
+        assert!(!TileType::Green.is_temple());
+        assert!(!TileType::Black.is_temple());
+        assert!(!TileType::Empty.is_temple());
+        
+        // TEMPLE constant should be Red
+        assert_eq!(TEMPLE, TileType::Red);
+    }
+
+    // ==================== REVOLT REWARD TESTS ====================
+
+    #[test]
+    fn test_revolt_winner_gets_red_point() {
+        let mut game = TnEGame::new();
+        
+        // Setup: Player 1 has a blue leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Blue }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 places competing blue leader in same kingdom (triggers revolt)
+        let ret = game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Blue });
+        assert!(ret.is_ok());
+        assert!(game.internal_conflict.is_some());
+        
+        // Attacker (P2) sends 2 red tile support
+        game.players.0[1].hand_red = 3;
+        game.process(Action::AddSupport(2)).unwrap();
+        
+        // Defender (P1) sends 0 support - attacker wins
+        game.process(Action::AddSupport(0)).unwrap();
+        
+        // P2 should have WON and gotten 1 RED point (amulet), NOT a blue point
+        // because revolts are always fought with temples (red tiles)
+        assert_eq!(game.players.0[1].score_red, 1);
+        assert_eq!(game.players.0[1].score_blue, 0); // Should NOT get blue point
+    }
+
+    // ==================== MONUMENT DECLINE TESTS ====================
+
+    #[test]
+    fn test_can_decline_monument() {
+        let mut game = TnEGame::new();
+
+        // Build a 2x2 square of red tiles
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+
+        // Should be in BuildMonument state
+        assert_eq!(game.next_state(), GameState::BuildMonument);
+
+        // Player declines to build monument
+        let ret = game.process(Action::DeclineMonument);
+        assert!(ret.is_ok());
+
+        // All monuments should still be available
+        assert_eq!(game.available_monuments.len(), 6);
+
+        // Tiles should still be on the board (not flipped for monument)
+        assert_eq!(game.board.get_tile_type(pos!(0, 0)), TileType::Red);
+        assert_eq!(game.board.get_tile_type(pos!(0, 1)), TileType::Red);
+        assert_eq!(game.board.get_tile_type(pos!(1, 0)), TileType::Red);
+        assert_eq!(game.board.get_tile_type(pos!(1, 1)), TileType::Red);
+    }
+
+    // ==================== BORDER TREASURE PRIORITY TESTS ====================
+
+    #[test]
+    fn test_special_border_positions_defined() {
+        // Verify that special border positions are defined correctly
+        assert!(SPECIAL_BORDER_POSITIONS.get(pos!(1, 15)));
+        assert!(SPECIAL_BORDER_POSITIONS.get(pos!(8, 14)));
+        
+        // Other positions should not be special
+        assert!(!SPECIAL_BORDER_POSITIONS.get(pos!(0, 0)));
+        assert!(!SPECIAL_BORDER_POSITIONS.get(pos!(1, 1)));
+    }
+
+    #[test]
+    fn test_must_take_border_treasure_first() {
+        let mut game = TnEGame::new();
+        
+        // Directly set up the scenario:
+        // Put a green leader adjacent to the border treasure at (1,15)
+        game.board.set_leader(pos!(1, 14), Leader::Green);
+        game.board.set_player(pos!(1, 14), Player::Player1);
+        game.players.0[0].placed_green_leader = Some(pos!(1, 14));
+        
+        // Put an additional treasure somewhere in the connected kingdom
+        // The kingdom already has treasure at (1,15) from initial setup
+        // Add a second treasure at (0, 10) which is also an initial treasure position
+        // We need to connect these two
+        
+        // Instead, let's manually create the TakeTreasure action state
+        // Simulate that the player needs to take a treasure with options:
+        // - (1, 15) is a border treasure
+        // - (0, 10) is a non-border treasure
+        
+        // Set up player action to be TakeTreasure with these two positions
+        game.state.push(GameState::TakeTreasure);
+        game.play_action_stack.clear();
+        game.play_action_stack.push((Player::Player1, PlayerAction::TakeTreasure([pos!(1, 15), pos!(0, 10)])));
+        
+        // Trying to take non-border treasure (0, 10) when border (1, 15) is available should fail
+        let ret = game.process(Action::TakeTreasure(pos!(0, 10)));
+        assert_eq!(ret.unwrap_err(), Error::MustTakeBorderTreasureFirst);
+        
+        // Taking border treasure (1, 15) should succeed
+        let ret = game.process(Action::TakeTreasure(pos!(1, 15)));
+        assert!(ret.is_ok());
     }
 }
