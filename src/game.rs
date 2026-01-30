@@ -278,6 +278,11 @@ impl TnEGame {
 
         game
     }
+    
+    /// Get a reference to the tile bag (remaining tiles to draw)
+    pub fn bag(&self) -> &Tiles {
+        &self.bag
+    }
 }
 
 impl TnEGame {
@@ -1782,29 +1787,85 @@ impl PlayerState {
     }
 
     pub fn get_eval(&self, state: &TnEGame) -> i16 {
-        let mut s = 0;
+        let mut s: i16 = 0;
 
-        // 100 points for each final score
-        s += self.calculate_score() as i16 * 20;
+        // === MINIMUM SCORE (Game-winning metric) ===
+        // The game is won by the player with the highest minimum color score.
+        // This is THE most important factor - weight it very heavily.
+        let min_score = self.calculate_score() as i16;
+        s += min_score * 100;
 
+        // === SCORE BALANCE ===
+        // Having one weak color is a huge liability. Penalize imbalanced scores.
+        let scores = [self.score_red, self.score_blue, self.score_green, self.score_black];
+        let max_color = *scores.iter().max().unwrap() as i16;
+        let min_color = *scores.iter().min().unwrap() as i16;
+        // Penalize imbalance - the bigger the gap, the worse
+        s -= (max_color - min_color) * 8;
+
+        // === TREASURE VALUE ===
+        // Treasures are wildcards - very valuable for filling gaps
+        s += self.score_treasure as i16 * 25;
+
+        // === LEADER PRESENCE ===
+        // Leaders on the board can score points. No leader = no points for that color.
+        // Bonus for having leaders placed (especially for weak colors)
+        let mut leaders_placed = 0;
+        let mut weakest_leader_bonus = 0;
+        for (leader, score) in [
+            (Leader::Red, self.score_red),
+            (Leader::Blue, self.score_blue),
+            (Leader::Green, self.score_green),
+            (Leader::Black, self.score_black),
+        ] {
+            if self.get_leader(leader).is_some() {
+                leaders_placed += 1;
+                // Extra bonus for leaders in colors where we're weak
+                if score == min_color as u8 {
+                    weakest_leader_bonus += 15;
+                }
+            }
+        }
+        s += leaders_placed * 12;
+        s += weakest_leader_bonus;
+
+        // === CONFLICT SUPPORT (Revolt/War Readiness) ===
+        // Having tiles in hand that match our leaders is valuable for conflicts
+        // Red tiles are especially important for revolt defense
+        s += (self.hand_red as i16).min(4) * 8; // Red for revolt support
+
+        // Tiles for war support in colors where we have leaders
+        if self.placed_red_leader.is_some() {
+            s += (self.hand_red as i16).min(3) * 4;
+        }
+        if self.placed_blue_leader.is_some() {
+            s += (self.hand_blue as i16).min(3) * 4;
+        }
+        if self.placed_green_leader.is_some() {
+            s += (self.hand_green as i16).min(3) * 4;
+        }
+        if self.placed_black_leader.is_some() {
+            s += (self.hand_black as i16).min(3) * 4;
+        }
+
+        // === KINGDOM STRENGTH ===
         // Precompute connectable positions once
         let connectable = state.board.connectable_bitboard();
         let mut visited = Bitboard::new();
 
-        for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
+        for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black] {
             if let Some(pos) = self.get_leader(leader) {
-                // 5 points for nearby red tiles (use bitboard intersection)
+                // Nearby red tiles = revolt defense strength
                 let neighbors = pos.neighbors();
                 let nearby_red_count = (neighbors & state.board.red_tiles).count_ones();
-                s += nearby_red_count as i16 * 10;
+                s += nearby_red_count as i16 * 6;
 
-                // 5 points for each matching tile in kingdom
-                // Only compute kingdom if not already visited
+                // Tiles in kingdom = potential scoring and war strength
                 if !visited.get(pos) {
                     let kingdom_map = state.board.find_kingdom_map_fast(pos, connectable);
                     visited |= kingdom_map;
                     
-                    // Count matching tiles using bitboard intersection
+                    // Count matching tiles in kingdom (war support + future scoring)
                     let tile_count = match leader {
                         Leader::Red => (kingdom_map & state.board.red_tiles).count_ones(),
                         Leader::Blue => (kingdom_map & state.board.blue_tiles).count_ones(),
@@ -1812,13 +1873,67 @@ impl PlayerState {
                         Leader::Black => (kingdom_map & state.board.black_tiles).count_ones(),
                         Leader::None => 0,
                     };
-                    s += tile_count as i16 * 5;
+                    s += tile_count as i16 * 3;
+
+                    // Check for treasures in kingdom (valuable for green leader)
+                    if leader == Leader::Green {
+                        let treasure_count = (kingdom_map & state.board.treasures).count_ones();
+                        s += treasure_count as i16 * 15;
+                    }
                 }
             }
         }
 
-        // 1 point for each point
-        s += self.score_sum() as i16;
+        // === CATASTROPHE AVAILABILITY ===
+        // Having catastrophes available is strategically valuable
+        s += self.num_catastrophes as i16 * 5;
+
+        // === TOTAL SCORE SUM (Secondary metric) ===
+        // Raw point accumulation is still somewhat useful
+        s += self.score_sum() as i16 * 2;
+
+        // === TILE SCARCITY AWARENESS ===
+        // Consider what tiles remain in the bag and adjust strategy accordingly
+        // If a color is scarce in the bag, having tiles of that color is more valuable
+        let bag = state.bag();
+        let bag_total = bag.sum() as i16;
+        
+        if bag_total > 0 {
+            // Calculate scarcity bonus for each color we have in hand
+            // Fewer tiles in bag = higher scarcity = more valuable to have
+            let red_scarcity = if bag.red < 10 { (10 - bag.red) as i16 } else { 0 };
+            let blue_scarcity = if bag.blue < 10 { (10 - bag.blue) as i16 } else { 0 };
+            let green_scarcity = if bag.green < 10 { (10 - bag.green) as i16 } else { 0 };
+            let black_scarcity = if bag.black < 10 { (10 - bag.black) as i16 } else { 0 };
+            
+            // Bonus for holding scarce tiles
+            s += (self.hand_red as i16) * red_scarcity;
+            s += (self.hand_blue as i16) * blue_scarcity;
+            s += (self.hand_green as i16) * green_scarcity;
+            s += (self.hand_black as i16) * black_scarcity;
+            
+            // Penalty for needing weak color tiles when they're scarce in bag
+            // If we're weak in a color AND that color is scarce, it's harder to improve
+            let weak_colors = [
+                (self.score_red, bag.red),
+                (self.score_blue, bag.blue),
+                (self.score_green, bag.green),
+                (self.score_black, bag.black),
+            ];
+            for (score, bag_count) in weak_colors {
+                if score == min_color as u8 && bag_count < 5 {
+                    // Weak in this color and it's scarce - bad situation
+                    s -= (5 - bag_count) as i16 * 3;
+                }
+            }
+        }
+        
+        // === ENDGAME AWARENESS ===
+        // When bag is nearly empty, focus more on immediate scoring
+        if bag_total < 20 {
+            // Late game - current scores matter more
+            s += min_score * 20; // Extra weight on minimum score in endgame
+        }
 
         s
     }
