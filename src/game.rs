@@ -281,6 +281,7 @@ impl TnEGame {
             | (GameState::TakeTreasure, Action::TakeTreasure { .. })
             | (GameState::WarSelectLeader, Action::WarSelectLeader(_))
             | (GameState::BuildMonument, Action::BuildMonument(_))
+            | (GameState::BuildMonument, Action::DeclineMonument)
             | (GameState::AddSupport, Action::AddSupport(_)) => true,
             _ => false,
         };
@@ -447,6 +448,9 @@ impl TnEGame {
                     return Err(Error::MonumentNot2x2);
                 }
             }
+            Action::DeclineMonument => {
+                // No validation needed - player is allowed to decline
+            }
         }
 
         Ok(())
@@ -500,6 +504,10 @@ impl TnEGame {
                     self.evict_leader_if_not_adjacent_to_temple(pos);
                 }
 
+                None
+            }
+            Action::DeclineMonument => {
+                // Player chose not to build a monument - just continue
                 None
             }
             Action::TakeTreasure(pos) => {
@@ -560,7 +568,7 @@ impl TnEGame {
 
                 if c.all_sent() {
                     if c.is_internal {
-                        // internal conflict
+                        // internal conflict (revolt)
                         let attacker_points = c.attacker_base_strength + c.attacker_support;
                         let defender_points = c.defender_base_strength + c.defender_support;
 
@@ -570,10 +578,11 @@ impl TnEGame {
                             (defender, attacker, c.attacker_pos)
                         };
 
-                        // give winner 1 point
+                        // In a revolt, winner always gets 1 RED point (amulet)
+                        // because revolts are fought with temples (red tiles)
                         self.players
                             .get_mut(winner)
-                            .add_score(c.conflict_leader.as_tile_type());
+                            .add_score(TileType::Red);
 
                         self.evict_leader(loser_pos);
                     } else {
@@ -1267,6 +1276,8 @@ pub enum Action {
     WarSelectLeader(Leader),
     AddSupport(u8),
     BuildMonument(MonumentType),
+    /// Decline to build a monument when offered the opportunity
+    DeclineMonument,
     PlaceTile {
         pos: Pos,
         tile_type: TileType,
@@ -1294,6 +1305,7 @@ pub enum Action {
 /// PlaceCatastrophe, 11 * 16
 /// TakeTreasure, 11 * 16
 /// BuildMonument, 6
+/// DeclineMonument, 1
 /// AddSupport, 7
 /// SelectLeader, 4
 /// Pass, 1
@@ -1335,14 +1347,17 @@ impl Into<usize> for Action {
             Action::BuildMonument(ty) => {
                 11 * H * W + (ty as usize)
             }
+            Action::DeclineMonument => {
+                11 * H * W + 6
+            }
             Action::AddSupport(n) => {
-                11 * H * W + 6 + (n as usize)
+                11 * H * W + 6 + 1 + (n as usize)
             }
             Action::WarSelectLeader(leader) => {
-                11 * H * W + 6 + 7 + (leader as usize - 1)
+                11 * H * W + 6 + 1 + 7 + (leader as usize - 1)
             }
             Action::Pass => {
-                11 * H * W + 6 + 7 + 4
+                11 * H * W + 6 + 1 + 7 + 4
             }
             Action::ReplaceTile(_) => unreachable!(),
         }
@@ -1376,20 +1391,22 @@ impl From<usize> for Action {
                     4 => Action::BuildMonument(MonumentType::BlackGreen),
                     5 => Action::BuildMonument(MonumentType::BlackBlue),
 
-                    6 => Action::AddSupport(idx as u8 - 6),
-                    7 => Action::AddSupport(idx as u8 - 6),
-                    8 => Action::AddSupport(idx as u8 - 6),
-                    9 => Action::AddSupport(idx as u8 - 6),
-                    10 => Action::AddSupport(idx as u8 - 6),
-                    11 => Action::AddSupport(idx as u8 - 6),
-                    12 => Action::AddSupport(idx as u8 - 6),
+                    6 => Action::DeclineMonument,
 
-                    13 => Action::WarSelectLeader(Leader::Blue),
-                    14 => Action::WarSelectLeader(Leader::Green),
-                    15 => Action::WarSelectLeader(Leader::Red),
-                    16 => Action::WarSelectLeader(Leader::Black),
+                    7 => Action::AddSupport(idx as u8 - 7),
+                    8 => Action::AddSupport(idx as u8 - 7),
+                    9 => Action::AddSupport(idx as u8 - 7),
+                    10 => Action::AddSupport(idx as u8 - 7),
+                    11 => Action::AddSupport(idx as u8 - 7),
+                    12 => Action::AddSupport(idx as u8 - 7),
+                    13 => Action::AddSupport(idx as u8 - 7),
 
-                    17 => Action::Pass,
+                    14 => Action::WarSelectLeader(Leader::Blue),
+                    15 => Action::WarSelectLeader(Leader::Green),
+                    16 => Action::WarSelectLeader(Leader::Red),
+                    17 => Action::WarSelectLeader(Leader::Black),
+
+                    18 => Action::Pass,
 
                     _ => panic!(),
                 }
@@ -4075,5 +4092,65 @@ mod tests {
         
         // TEMPLE constant should be Red
         assert_eq!(TEMPLE, TileType::Red);
+    }
+
+    // ==================== REVOLT REWARD TESTS ====================
+
+    #[test]
+    fn test_revolt_winner_gets_red_point() {
+        let mut game = TnEGame::new();
+        
+        // Setup: Player 1 has a blue leader
+        game.process(Action::PlaceLeader { pos: pos!(0, 1), leader: Leader::Blue }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 places competing blue leader in same kingdom (triggers revolt)
+        let ret = game.process(Action::PlaceLeader { pos: pos!(2, 1), leader: Leader::Blue });
+        assert!(ret.is_ok());
+        assert!(game.internal_conflict.is_some());
+        
+        // Attacker (P2) sends 2 red tile support
+        game.players.0[1].hand_red = 3;
+        game.process(Action::AddSupport(2)).unwrap();
+        
+        // Defender (P1) sends 0 support - attacker wins
+        game.process(Action::AddSupport(0)).unwrap();
+        
+        // P2 should have WON and gotten 1 RED point (amulet), NOT a blue point
+        // because revolts are always fought with temples (red tiles)
+        assert_eq!(game.players.0[1].score_red, 1);
+        assert_eq!(game.players.0[1].score_blue, 0); // Should NOT get blue point
+    }
+
+    // ==================== MONUMENT DECLINE TESTS ====================
+
+    #[test]
+    fn test_can_decline_monument() {
+        let mut game = TnEGame::new();
+
+        // Build a 2x2 square of red tiles
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 0), tile_type: TileType::Red }).unwrap();
+        ensure_player_has_at_least_1_color(&mut game.players.0[0], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(0, 1), tile_type: TileType::Red }).unwrap();
+
+        ensure_player_has_at_least_1_color(&mut game.players.0[1], TileType::Red);
+        game.process(Action::PlaceTile { pos: pos!(1, 0), tile_type: TileType::Red }).unwrap();
+
+        // Should be in BuildMonument state
+        assert_eq!(game.next_state(), GameState::BuildMonument);
+
+        // Player declines to build monument
+        let ret = game.process(Action::DeclineMonument);
+        assert!(ret.is_ok());
+
+        // All monuments should still be available
+        assert_eq!(game.available_monuments.len(), 6);
+
+        // Tiles should still be on the board (not flipped for monument)
+        assert_eq!(game.board.get_tile_type(pos!(0, 0)), TileType::Red);
+        assert_eq!(game.board.get_tile_type(pos!(0, 1)), TileType::Red);
+        assert_eq!(game.board.get_tile_type(pos!(1, 0)), TileType::Red);
+        assert_eq!(game.board.get_tile_type(pos!(1, 1)), TileType::Red);
     }
 }

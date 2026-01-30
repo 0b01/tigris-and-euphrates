@@ -154,6 +154,8 @@ impl PlayerAction {
                 for t in types {
                     moves.push(Action::BuildMonument(*t));
                 }
+                // Player can also decline to build a monument
+                moves.push(Action::DeclineMonument);
             }
         }
 
