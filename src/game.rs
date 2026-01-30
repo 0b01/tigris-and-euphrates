@@ -54,6 +54,14 @@ const COL_15_MASK: Bitboard = Bitboard::from_binary([
     0x0
 ]);
 
+// Board boundary mask - only positions 0-175 are valid (11 rows x 16 columns)
+const BOARD_MASK: Bitboard = Bitboard::from_binary([
+    0xFFFF_FFFF_FFFF_FFFF,
+    0xFFFF_FFFF_FFFF_FFFF,
+    0x0000_FFFF_FFFF_FFFF,
+    0x0
+]);
+
 static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut ret = [[Bitboard::new(); W]; H];
     for x in 0..H {
@@ -1800,6 +1808,18 @@ impl Bitboard {
         (*self & pos.mask()).0 != U256::zero()
     }
 
+    /// Get the first set bit position without modifying the bitboard
+    #[inline]
+    pub fn first_set_pos(&self) -> Option<Pos> {
+        for i in 0..4 {
+            if self.0.0[i] != 0 {
+                let j = self.0.0[i].trailing_zeros() as usize;
+                return Some(Pos::from_index(i * 64 + j));
+            }
+        }
+        None
+    }
+
     fn pop(&mut self) -> Option<Pos> {
         // pop the first 1 in the U256
         let mut i = 0;
@@ -1827,7 +1847,8 @@ impl Bitboard {
         // Right: shift left by 1, but mask out column 0 to prevent wrap
         let right = Bitboard((self.0 << 1) & (!COL_0_MASK).0);
         
-        up | down | left | right
+        // Mask to valid board positions only
+        (up | down | left | right) & BOARD_MASK
     }
 }
 
@@ -2032,10 +2053,7 @@ impl Board {
         // Precompute connectable positions once
         let connectable = self.connectable_bitboard();
         
-        loop {
-            // Get next unprocessed leader position
-            let Some(pos) = remaining_leaders.iter().next() else { break };
-            
+        while let Some(pos) = remaining_leaders.first_set_pos() {
             // Find kingdom map using fast bitboard flood-fill
             let kingdom_map = self.find_kingdom_map_fast(pos, connectable);
             remaining_leaders &= !kingdom_map;
@@ -2097,7 +2115,7 @@ impl Board {
             let expanded = kingdom.dilate() & connectable;
             let new_kingdom = kingdom | expanded;
             
-            // If no new cells were added, we're done (use XOR to check for changes)
+            // If no new cells were added, we're done
             if (new_kingdom.0 ^ kingdom.0).is_zero() {
                 break;
             }
