@@ -575,4 +575,212 @@ mod tests {
             shallow_wins
         );
     }
+
+    // ==================== ELO RATING SYSTEM ====================
+    
+    /// ELO rating calculation constants
+    const INITIAL_ELO: f64 = 1500.0;
+    const K_FACTOR: f64 = 32.0;
+    
+    /// Calculate expected score based on ELO ratings
+    fn expected_score(player_elo: f64, opponent_elo: f64) -> f64 {
+        1.0 / (1.0 + 10.0_f64.powf((opponent_elo - player_elo) / 400.0))
+    }
+    
+    /// Update ELO rating after a game
+    /// actual_score: 1.0 for win, 0.5 for draw, 0.0 for loss
+    fn update_elo(current_elo: f64, expected: f64, actual: f64) -> f64 {
+        current_elo + K_FACTOR * (actual - expected)
+    }
+    
+    /// Run a tournament between AI versions and calculate ELO ratings
+    /// This gives an objective measure of AI strength
+    /// 
+    /// Run with: cargo test --release test_elo_tournament -- --nocapture --ignored
+    #[test]
+    #[ignore] // This is a benchmark test - run manually for AI strength analysis
+    fn test_elo_tournament() {
+        println!("\n");
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        println!("║           TIGRIS & EUPHRATES AI ELO TOURNAMENT               ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║  Measuring AI strength using the ELO rating system           ║");
+        println!("║  (Same system used on Board Game Arena for T&E rankings)     ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!();
+        
+        // AI Players in the tournament
+        // Index: 0=Random, 1=SimpleD1, 2=SimpleD2, 3=ImprovedD1, 4=ImprovedD2
+        let mut elos = [INITIAL_ELO; 5];
+        let names = [
+            "Random Player",
+            "Simple AI (d1)",
+            "Simple AI (d2)", 
+            "Improved AI (d1)",
+            "Improved AI (d2)",
+        ];
+        
+        let games_per_matchup = 4; // Play 4 games per matchup for better statistics
+        let mut results = [[0i32; 5]; 5]; // wins[i][j] = wins of player i against player j
+        
+        println!("Running tournament matches ({} games per matchup)...", games_per_matchup);
+        
+        // Round-robin tournament
+        for i in 0..5 {
+            for j in (i+1)..5 {
+                for game_num in 0..games_per_matchup {
+                    let i_is_p1 = game_num % 2 == 0;
+                    
+                    // Create strategies for this matchup
+                    let winner = match (i, j) {
+                        // Random vs others
+                        (0, 1) => {
+                            let mut p1 = Random::<TigrisAndEuphrates>::new();
+                            let mut p2 = Negamax::new(SimpleEvaluator::default(), 1);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (0, 2) => {
+                            let mut p1 = Random::<TigrisAndEuphrates>::new();
+                            let mut p2 = Negamax::new(SimpleEvaluator::default(), 2);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (0, 3) => {
+                            let mut p1 = Random::<TigrisAndEuphrates>::new();
+                            let mut p2 = Negamax::new(Evaluator::default(), 1);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (0, 4) => {
+                            let mut p1 = Random::<TigrisAndEuphrates>::new();
+                            let mut p2 = Negamax::new(Evaluator::default(), 2);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        // Simple AI matchups
+                        (1, 2) => {
+                            let mut p1 = Negamax::new(SimpleEvaluator::default(), 1);
+                            let mut p2 = Negamax::new(SimpleEvaluator::default(), 2);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (1, 3) => {
+                            let mut p1 = Negamax::new(SimpleEvaluator::default(), 1);
+                            let mut p2 = Negamax::new(Evaluator::default(), 1);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (1, 4) => {
+                            let mut p1 = Negamax::new(SimpleEvaluator::default(), 1);
+                            let mut p2 = Negamax::new(Evaluator::default(), 2);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (2, 3) => {
+                            let mut p1 = Negamax::new(SimpleEvaluator::default(), 2);
+                            let mut p2 = Negamax::new(Evaluator::default(), 1);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        (2, 4) => {
+                            let mut p1 = Negamax::new(SimpleEvaluator::default(), 2);
+                            let mut p2 = Negamax::new(Evaluator::default(), 2);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        // Improved AI matchups
+                        (3, 4) => {
+                            let mut p1 = Negamax::new(Evaluator::default(), 1);
+                            let mut p2 = Negamax::new(Evaluator::default(), 2);
+                            if i_is_p1 { play_game(&mut p1, &mut p2, 200) }
+                            else { play_game(&mut p2, &mut p1, 200) }
+                        }
+                        _ => Player::None,
+                    };
+                    
+                    // Determine who won relative to i and j
+                    let (i_score, j_score) = match winner {
+                        Player::Player1 if i_is_p1 => (1.0, 0.0),
+                        Player::Player2 if i_is_p1 => (0.0, 1.0),
+                        Player::Player1 if !i_is_p1 => (0.0, 1.0),
+                        Player::Player2 if !i_is_p1 => (1.0, 0.0),
+                        _ => (0.5, 0.5), // Draw
+                    };
+                    
+                    // Update results
+                    if i_score == 1.0 { results[i][j] += 1; }
+                    if j_score == 1.0 { results[j][i] += 1; }
+                    
+                    // Update ELO ratings
+                    let expected_i = expected_score(elos[i], elos[j]);
+                    let expected_j = expected_score(elos[j], elos[i]);
+                    elos[i] = update_elo(elos[i], expected_i, i_score);
+                    elos[j] = update_elo(elos[j], expected_j, j_score);
+                }
+            }
+        }
+        
+        // Print results
+        println!();
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        println!("║                    TOURNAMENT RESULTS                        ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        
+        // Sort by ELO
+        let mut ranked: Vec<(usize, f64)> = elos.iter().enumerate().map(|(i, &e)| (i, e)).collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        
+        println!("║  Rank │ Player                    │ ELO Rating │ vs Random  ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        
+        for (rank, (idx, elo)) in ranked.iter().enumerate() {
+            let vs_random = if *idx == 0 { 
+                "N/A".to_string() 
+            } else { 
+                format!("{}-{}", results[*idx][0], results[0][*idx])
+            };
+            println!("║  {:>4} │ {:25} │ {:>10.0} │ {:>10} ║", 
+                     rank + 1, names[*idx], elo, vs_random);
+        }
+        
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!();
+        
+        // Calculate ELO difference between best improved AI and random
+        let improved_d2_elo = elos[4];
+        let random_elo = elos[0];
+        let elo_diff = improved_d2_elo - random_elo;
+        
+        println!("📊 ELO Analysis:");
+        println!("   • Improved AI (d2) ELO: {:.0}", improved_d2_elo);
+        println!("   • Random Player ELO: {:.0}", random_elo);
+        println!("   • ELO Difference: {:.0} points", elo_diff);
+        println!();
+        
+        // ELO interpretation
+        println!("📈 What does this mean?");
+        println!("   • +100 ELO ≈ 64% expected win rate");
+        println!("   • +200 ELO ≈ 76% expected win rate");
+        println!("   • +400 ELO ≈ 91% expected win rate");
+        println!();
+        
+        let win_rate = expected_score(improved_d2_elo, random_elo) * 100.0;
+        println!("   🎯 Our AI's expected win rate vs Random: {:.1}%", win_rate);
+        println!();
+        
+        // Context for Board Game Arena
+        println!("🌐 Board Game Arena Context:");
+        println!("   • BGA uses ELO for T&E rankings");
+        println!("   • Top 3 players have ELO > 300 above average");
+        println!("   • Our AI shows {:.0} ELO above random baseline", elo_diff);
+        println!();
+        
+        // Note about statistical significance
+        println!("⚠️  Note: With only {} games per matchup, results can vary.", games_per_matchup);
+        println!("   Increase games_per_matchup for more statistically significant rankings.");
+        
+        // This is a benchmark test - no assertions, just reporting
+        // The ELO results speak for themselves
+    }
 }
