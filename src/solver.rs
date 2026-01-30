@@ -86,6 +86,9 @@ impl PlayerAction {
                 }
             }
             PlayerAction::Normal => {
+                // Precompute kingdom count for checking tile placements
+                let kingdom_count = state.board.nearby_kingdom_count();
+                
                 // find all possible tile placements
                 for x in 0..H {
                     for y in 0..W {
@@ -94,7 +97,8 @@ impl PlayerAction {
                         for tile_type in [TileType::Black, TileType::Red, TileType::Green, TileType::Blue].into_iter() {
                             if state.players.get(current_player).get_hand(tile_type) > 0
                             && state.board.can_place_tile(pos)
-                            && (river == (tile_type == TileType::Blue)) {
+                            && (river == (tile_type == TileType::Blue))
+                            && kingdom_count[x][y] <= 2 {
                                 moves.push(Action::PlaceTile {
                                     pos,
                                     tile_type,
