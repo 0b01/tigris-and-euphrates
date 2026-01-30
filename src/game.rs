@@ -1802,22 +1802,31 @@ impl Bitboard {
         })
     }
 
+    #[inline]
     pub fn count_ones(&self) -> u8 {
-        self.0.0.iter().map(|x| x.count_ones() as u8).sum()
+        (self.0.0[0].count_ones() + self.0.0[1].count_ones() + 
+         self.0.0[2].count_ones() + self.0.0[3].count_ones()) as u8
     }
 
+    #[inline]
     pub fn set(&mut self, pos: Pos) {
-        *self |= pos.mask()
+        let index = pos.index();
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        self.0.0[word_idx] |= 1u64 << bit_idx;
     }
 
+    #[inline]
     pub fn clear(&mut self) {
         self.0 = U256::zero();
     }
 
+    #[inline]
     pub fn reset(&mut self, pos: Pos) {
         *self &= !pos.mask();
     }
 
+    #[inline]
     pub fn get(&self, pos: Pos) -> bool {
         let index = pos.index();
         let word_idx = index / 64;
@@ -1837,35 +1846,73 @@ impl Bitboard {
         None
     }
 
+    #[inline]
     fn pop(&mut self) -> Option<Pos> {
         // pop the first 1 in the U256
-        let mut i = 0;
-        while i < 4 {
-            if self.0.0[i] != 0 {
-                let j = self.0.0[i].trailing_zeros() as usize;
-                self.0.0[i] &= !(1 << j);
-                return Some(Pos::from_index(i * 64 + j));
-            }
-            i += 1;
+        if self.0.0[0] != 0 {
+            let j = self.0.0[0].trailing_zeros() as usize;
+            self.0.0[0] &= self.0.0[0] - 1; // Clear lowest set bit
+            return Some(Pos::from_index(j));
+        }
+        if self.0.0[1] != 0 {
+            let j = self.0.0[1].trailing_zeros() as usize;
+            self.0.0[1] &= self.0.0[1] - 1;
+            return Some(Pos::from_index(64 + j));
+        }
+        if self.0.0[2] != 0 {
+            let j = self.0.0[2].trailing_zeros() as usize;
+            self.0.0[2] &= self.0.0[2] - 1;
+            return Some(Pos::from_index(128 + j));
+        }
+        if self.0.0[3] != 0 {
+            let j = self.0.0[3].trailing_zeros() as usize;
+            self.0.0[3] &= self.0.0[3] - 1;
+            return Some(Pos::from_index(192 + j));
         }
         None
     }
 
     /// Expand the bitboard to include all orthogonal neighbors.
-    /// Uses bit shifts instead of iterating over each position.
+    /// Uses direct u64 operations for speed.
     #[inline]
     pub fn dilate(&self) -> Bitboard {
-        // Up: shift right by W (16) - moves to lower row index
-        let up = Bitboard(self.0 >> W);
-        // Down: shift left by W (16) - moves to higher row index  
-        let down = Bitboard(self.0 << W);
-        // Left: shift right by 1, but mask out column 15 to prevent wrap
-        let left = Bitboard((self.0 >> 1) & (!COL_15_MASK).0);
-        // Right: shift left by 1, but mask out column 0 to prevent wrap
-        let right = Bitboard((self.0 << 1) & (!COL_0_MASK).0);
+        let p = &self.0.0;
         
-        // Mask to valid board positions only
-        (up | down | left | right) & BOARD_MASK
+        // Column masks for each u64 word
+        const NOT_COL_0: u64 = !0x0001_0001_0001_0001u64;
+        const NOT_COL_15: u64 = !0x8000_8000_8000_8000u64;
+        
+        // Up: shift right by 16 within each word, carry from next word
+        let up0 = (p[0] >> 16) | (p[1] << 48);
+        let up1 = (p[1] >> 16) | (p[2] << 48);
+        let up2 = p[2] >> 16; // No carry from p[3] since it's always 0 for our board
+        
+        // Down: shift left by 16 within each word, carry from prev word
+        let down0 = p[0] << 16;
+        let down1 = (p[1] << 16) | (p[0] >> 48);
+        let down2 = (p[2] << 16) | (p[1] >> 48);
+        
+        // Left: shift right by 1, mask out column 15 to prevent wrap
+        let left0 = (p[0] >> 1) & NOT_COL_15;
+        let left1 = (p[1] >> 1) & NOT_COL_15;
+        let left2 = (p[2] >> 1) & NOT_COL_15;
+        
+        // Right: shift left by 1, mask out column 0 to prevent wrap
+        let right0 = (p[0] << 1) & NOT_COL_0;
+        let right1 = (p[1] << 1) & NOT_COL_0;
+        let right2 = (p[2] << 1) & NOT_COL_0;
+        
+        // Combine all directions and mask to valid board
+        const BOARD_MASK_0: u64 = 0xFFFF_FFFF_FFFF_FFFFu64;
+        const BOARD_MASK_1: u64 = 0xFFFF_FFFF_FFFF_FFFFu64;
+        const BOARD_MASK_2: u64 = 0x0000_FFFF_FFFF_FFFFu64; // Only first 48 bits valid
+        
+        Bitboard::from_binary([
+            (up0 | down0 | left0 | right0) & BOARD_MASK_0,
+            (up1 | down1 | left1 | right1) & BOARD_MASK_1,
+            (up2 | down2 | left2 | right2) & BOARD_MASK_2,
+            0,
+        ])
     }
 }
 
@@ -2023,7 +2070,7 @@ impl Board {
             }
             visited.set(pos);
             for neighbor in pos.neighbors().iter() {
-                if self.is_connectable(pos) {
+                if self.is_connectable(neighbor) {
                     stack.set(neighbor);
                 }
             }
