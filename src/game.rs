@@ -263,6 +263,11 @@ impl TnEGame {
 
         game
     }
+    
+    /// Get a reference to the tile bag (remaining tiles to draw)
+    pub fn bag(&self) -> &Tiles {
+        &self.bag
+    }
 }
 
 impl TnEGame {
@@ -1790,6 +1795,49 @@ impl PlayerState {
         // === TOTAL SCORE SUM (Secondary metric) ===
         // Raw point accumulation is still somewhat useful
         s += self.score_sum() as i16 * 2;
+
+        // === TILE SCARCITY AWARENESS ===
+        // Consider what tiles remain in the bag and adjust strategy accordingly
+        // If a color is scarce in the bag, having tiles of that color is more valuable
+        let bag = state.bag();
+        let bag_total = bag.sum() as i16;
+        
+        if bag_total > 0 {
+            // Calculate scarcity bonus for each color we have in hand
+            // Fewer tiles in bag = higher scarcity = more valuable to have
+            let red_scarcity = if bag.red < 10 { (10 - bag.red) as i16 } else { 0 };
+            let blue_scarcity = if bag.blue < 10 { (10 - bag.blue) as i16 } else { 0 };
+            let green_scarcity = if bag.green < 10 { (10 - bag.green) as i16 } else { 0 };
+            let black_scarcity = if bag.black < 10 { (10 - bag.black) as i16 } else { 0 };
+            
+            // Bonus for holding scarce tiles
+            s += (self.hand_red as i16) * red_scarcity;
+            s += (self.hand_blue as i16) * blue_scarcity;
+            s += (self.hand_green as i16) * green_scarcity;
+            s += (self.hand_black as i16) * black_scarcity;
+            
+            // Penalty for needing weak color tiles when they're scarce in bag
+            // If we're weak in a color AND that color is scarce, it's harder to improve
+            let weak_colors = [
+                (self.score_red, bag.red),
+                (self.score_blue, bag.blue),
+                (self.score_green, bag.green),
+                (self.score_black, bag.black),
+            ];
+            for (score, bag_count) in weak_colors {
+                if score == min_color as u8 && bag_count < 5 {
+                    // Weak in this color and it's scarce - bad situation
+                    s -= (5 - bag_count) as i16 * 3;
+                }
+            }
+        }
+        
+        // === ENDGAME AWARENESS ===
+        // When bag is nearly empty, focus more on immediate scoring
+        if bag_total < 20 {
+            // Late game - current scores matter more
+            s += min_score * 20; // Extra weight on minimum score in endgame
+        }
 
         s
     }
