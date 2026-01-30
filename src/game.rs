@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use once_cell::sync::Lazy;
 pub const W: usize = 16;
 pub const H: usize = 11;
+
 #[macro_export]
 macro_rules! pos {
     // compile time convert 1A to 00
@@ -14,6 +15,20 @@ macro_rules! pos {
         Pos { x: $x as u8, y: $y as u8 }
     };
 }
+
+/// Special border positions where treasures must be taken first
+/// According to the rules: "If there are treasures on a special border space,
+/// the player must take treasures from those spaces first"
+/// These are the corner treasure positions marked with special borders on the board
+pub static SPECIAL_BORDER_POSITIONS: Lazy<Bitboard> = Lazy::new(|| {
+    let mut bb = Bitboard::new();
+    // Based on the standard T&E board, the special border positions are:
+    // (1, 15) - top right corner temple
+    // (8, 14) - bottom right area temple
+    bb.set(pos!(1, 15));
+    bb.set(pos!(8, 14));
+    bb
+});
 
 static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut mask = [[Bitboard::new(); W]; H];
@@ -294,6 +309,15 @@ impl TnEGame {
             Action::TakeTreasure(pos) => {
                 if !self.board.get_treasure(pos) {
                     return Err(Error::NoTreasure);
+                }
+                // Check if player is trying to take a non-border treasure when a border one is available
+                let PlayerAction::TakeTreasure(available_treasures) = self.next_action() else {
+                    unreachable!()
+                };
+                let is_taking_border = SPECIAL_BORDER_POSITIONS.get(pos);
+                let has_border_treasure = available_treasures.iter().any(|t| SPECIAL_BORDER_POSITIONS.get(*t));
+                if has_border_treasure && !is_taking_border {
+                    return Err(Error::MustTakeBorderTreasureFirst);
                 }
             }
             Action::AddSupport(n) => {
@@ -1031,7 +1055,7 @@ impl TnEGame {
 
     fn check_treasure_at(&self, pos: Pos, extra_actions: &mut Vec<(Player, PlayerAction, GameState)>) {
         // check if treasure is available for taking
-        // TODO: must take corner treasures first
+        // Border treasure priority is enforced in validate_action
         let kingdom = self.board.find_kingdom(pos, &mut Bitboard::new());
         if kingdom.treasures.iter().filter(|i| i.is_some()).count() > 1
             && kingdom.green_leader.is_some()
@@ -2725,6 +2749,8 @@ pub enum Error {
     AlreadySentSupport,
     InvalidAction(GameState, Action),
     NoTreasure,
+    /// Must take treasure from special border space first
+    MustTakeBorderTreasureFirst,
     GameOver,
     CannotPlaceOverTreasure,
     LeaderAlreadyPlaced,
@@ -4152,5 +4178,52 @@ mod tests {
         assert_eq!(game.board.get_tile_type(pos!(0, 1)), TileType::Red);
         assert_eq!(game.board.get_tile_type(pos!(1, 0)), TileType::Red);
         assert_eq!(game.board.get_tile_type(pos!(1, 1)), TileType::Red);
+    }
+
+    // ==================== BORDER TREASURE PRIORITY TESTS ====================
+
+    #[test]
+    fn test_special_border_positions_defined() {
+        // Verify that special border positions are defined correctly
+        assert!(SPECIAL_BORDER_POSITIONS.get(pos!(1, 15)));
+        assert!(SPECIAL_BORDER_POSITIONS.get(pos!(8, 14)));
+        
+        // Other positions should not be special
+        assert!(!SPECIAL_BORDER_POSITIONS.get(pos!(0, 0)));
+        assert!(!SPECIAL_BORDER_POSITIONS.get(pos!(1, 1)));
+    }
+
+    #[test]
+    fn test_must_take_border_treasure_first() {
+        let mut game = TnEGame::new();
+        
+        // Directly set up the scenario:
+        // Put a green leader adjacent to the border treasure at (1,15)
+        game.board.set_leader(pos!(1, 14), Leader::Green);
+        game.board.set_player(pos!(1, 14), Player::Player1);
+        game.players.0[0].placed_green_leader = Some(pos!(1, 14));
+        
+        // Put an additional treasure somewhere in the connected kingdom
+        // The kingdom already has treasure at (1,15) from initial setup
+        // Add a second treasure at (0, 10) which is also an initial treasure position
+        // We need to connect these two
+        
+        // Instead, let's manually create the TakeTreasure action state
+        // Simulate that the player needs to take a treasure with options:
+        // - (1, 15) is a border treasure
+        // - (0, 10) is a non-border treasure
+        
+        // Set up player action to be TakeTreasure with these two positions
+        game.state.push(GameState::TakeTreasure);
+        game.play_action_stack.clear();
+        game.play_action_stack.push((Player::Player1, PlayerAction::TakeTreasure([pos!(1, 15), pos!(0, 10)])));
+        
+        // Trying to take non-border treasure (0, 10) when border (1, 15) is available should fail
+        let ret = game.process(Action::TakeTreasure(pos!(0, 10)));
+        assert_eq!(ret.unwrap_err(), Error::MustTakeBorderTreasureFirst);
+        
+        // Taking border treasure (1, 15) should succeed
+        let ret = game.process(Action::TakeTreasure(pos!(1, 15)));
+        assert!(ret.is_ok());
     }
 }
