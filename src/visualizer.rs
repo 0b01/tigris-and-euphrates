@@ -443,8 +443,9 @@ async fn run_history(history: Vec<TnEGame>) {
 
 async fn run(mut game: TnEGame, self_play: bool) {
     let mut ui = GameUIState::new().await;
-    // let mut ai_strategy = Negamax::new(Evaluator::default(), 3);
-    let mut ai_strategy = Random::<TigrisAndEuphrates>::default();
+    // Use depth 4 for a challenging AI opponent
+    let mut ai_strategy = Negamax::new(Evaluator::default(), 4);
+    // let mut ai_strategy = Random::<TigrisAndEuphrates>::default();
 
     loop {
         let mouse_logical = mouse_position_logical();

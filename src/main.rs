@@ -65,8 +65,9 @@ pub fn view_history_json(path: &str) {
 fn test_play() {
     let mut history = HistoryBuffer::new();
 
-    let mut p1_strat = Negamax::new(Evaluator::default(), 2);
-    let mut p2_strat = Negamax::new(Evaluator::default(), 2);
+    // Depth 4 for stronger AI play (looks 4 plies ahead)
+    let mut p1_strat = Negamax::new(Evaluator::default(), 4);
+    let mut p2_strat = Negamax::new(Evaluator::default(), 4);
 
     // let mut p1_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
     // let mut p2_strat = MonteCarloTreeSearch::new(MCTSOptions::default().with_num_threads(1));
