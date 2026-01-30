@@ -607,7 +607,7 @@ async fn run(mut game: TnEGame, self_play: bool) {
             }
 
             let m = m.unwrap();
-            process(&mut game, m.move_);
+            process(&mut game, m);
 
             fn calculate_score(game: &mut TnEGame, p: Player) -> (i16, u8) {
                 let player_state = game.players.get(p);

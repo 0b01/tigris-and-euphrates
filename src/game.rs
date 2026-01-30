@@ -52,31 +52,6 @@ static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     mask
 });
 
-// Column masks for dilate operation - prevent wrap-around (compile-time constants)
-// Column 0: bits at positions 0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160
-const COL_0_MASK: Bitboard = Bitboard::from_binary([
-    0x0001_0001_0001_0001,
-    0x0001_0001_0001_0001,
-    0x0000_0001_0001_0001,
-    0x0
-]);
-
-// Column 15: bits at positions 15, 31, 47, 63, 79, 95, 111, 127, 143, 159, 175
-const COL_15_MASK: Bitboard = Bitboard::from_binary([
-    0x8000_8000_8000_8000,
-    0x8000_8000_8000_8000,
-    0x0000_8000_8000_8000,
-    0x0
-]);
-
-// Board boundary mask - only positions 0-175 are valid (11 rows x 16 columns)
-const BOARD_MASK: Bitboard = Bitboard::from_binary([
-    0xFFFF_FFFF_FFFF_FFFF,
-    0xFFFF_FFFF_FFFF_FFFF,
-    0x0000_FFFF_FFFF_FFFF,
-    0x0
-]);
-
 static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut ret = [[Bitboard::new(); W]; H];
     for x in 0..H {
@@ -1265,20 +1240,20 @@ pub struct ExternalConflict {
 /// occurs when placing same leaders in same kingdom
 #[derive(Debug, Clone, Copy, Eq, Serialize, Deserialize)]
 pub struct Conflict {
-    is_internal: bool,
+    pub is_internal: bool,
     pub conflict_leader: Leader,
 
-    attacker: Player,
+    pub attacker: Player,
     pub attacker_pos: Pos,
-    attacker_support: u8,
-    attacker_sent_support: bool,
-    attacker_base_strength: u8,
+    pub attacker_support: u8,
+    pub attacker_sent_support: bool,
+    pub attacker_base_strength: u8,
 
-    defender: Player,
+    pub defender: Player,
     pub defender_pos: Pos,
-    defender_support: u8,
-    defender_sent_support: bool,
-    defender_base_strength: u8,
+    pub defender_support: u8,
+    pub defender_sent_support: bool,
+    pub defender_base_strength: u8,
 }
 impl Conflict {
     fn all_sent(&self) -> bool {
@@ -1659,7 +1634,7 @@ pub struct PlayerState {
     pub score_blue: u8,
 
     pub num_catastrophes: u8,
-    score_treasure: u8,
+    pub score_treasure: u8,
 }
 
 impl PlayerState {

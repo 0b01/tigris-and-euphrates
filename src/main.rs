@@ -10,7 +10,6 @@ use minimax::perft;
 use minimax::Game;
 use minimax::MCTSOptions;
 use minimax::MonteCarloTreeSearch;
-use minimax::Move;
 use minimax::Negamax;
 use minimax::Random;
 use minimax::Strategy;
@@ -84,8 +83,8 @@ fn test_play() {
         };
         match strategy.choose_move(&mut history.last_mut()) {
             Some(m) => {
-                println!("{:?}: {:?}", curr_player, &m.move_);
-                let ret = history.process(m.move_);
+                println!("{:?}: {:?}", curr_player, &m);
+                let ret = history.process(m);
                 if ret.is_err() {
                     history.save("out.json").unwrap();
                     ret.unwrap();

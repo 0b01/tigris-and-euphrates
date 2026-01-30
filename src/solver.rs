@@ -1,14 +1,7 @@
 use crate::{game::{Action, Leader, Player, PlayerAction, TnEGame, H, W, TileType, Pos, RIVER}, pos};
-use minimax::Zobrist;
 use once_cell::sync::Lazy;
 
 pub struct TigrisAndEuphrates;
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TnEMove {
-    pub old_state: TnEGame,
-    pub move_: Action,
-}
 
 // Zobrist hash constants for leader positions
 static LEADER_HASHES: Lazy<[[[u64; 4]; W]; H]> = Lazy::new(|| {
@@ -36,81 +29,51 @@ static PLAYER_TURN_HASH: Lazy<u64> = Lazy::new(|| {
     hasher.finish()
 });
 
-impl Zobrist for TnEGame {
-    fn zobrist_hash(&self) -> u64 {
-        let mut hash: u64 = 0;
-        
-        // Hash based on tile positions using bitboard bits
-        // This is a simplified hash - we extract key bits from the bitboards
-        let red_bits = self.board.red_tiles.0.low_u64();
-        let blue_bits = self.board.blue_tiles.0.low_u64();
-        let green_bits = self.board.green_tiles.0.low_u64();
-        let black_bits = self.board.black_tiles.0.low_u64();
-        
-        hash ^= red_bits.wrapping_mul(0x9e3779b97f4a7c15);
-        hash ^= blue_bits.wrapping_mul(0x85ebca6b);
-        hash ^= green_bits.wrapping_mul(0xc2b2ae35);
-        hash ^= black_bits.wrapping_mul(0x27d4eb2f);
-        
-        // Hash leader positions
-        for (i, leader) in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].iter().enumerate() {
-            if let Some(pos) = self.players.get(Player::Player1).get_leader(*leader) {
-                hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i];
-            }
-            if let Some(pos) = self.players.get(Player::Player2).get_leader(*leader) {
-                hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i].wrapping_add(0xdeadbeef);
-            }
+fn compute_zobrist_hash(state: &TnEGame) -> u64 {
+    let mut hash: u64 = 0;
+    
+    // Hash based on tile positions using bitboard bits
+    // This is a simplified hash - we extract key bits from the bitboards
+    let red_bits = state.board.red_tiles.0.low_u64();
+    let blue_bits = state.board.blue_tiles.0.low_u64();
+    let green_bits = state.board.green_tiles.0.low_u64();
+    let black_bits = state.board.black_tiles.0.low_u64();
+    
+    hash ^= red_bits.wrapping_mul(0x9e3779b97f4a7c15);
+    hash ^= blue_bits.wrapping_mul(0x85ebca6b);
+    hash ^= green_bits.wrapping_mul(0xc2b2ae35);
+    hash ^= black_bits.wrapping_mul(0x27d4eb2f);
+    
+    // Hash leader positions
+    for (i, leader) in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].iter().enumerate() {
+        if let Some(pos) = state.players.get(Player::Player1).get_leader(*leader) {
+            hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i];
         }
-        
-        // Hash player turn
-        if self.next_player() == Player::Player1 {
-            hash ^= *PLAYER_TURN_HASH;
+        if let Some(pos) = state.players.get(Player::Player2).get_leader(*leader) {
+            hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i].wrapping_add(0xdeadbeef);
         }
-        
-        // Hash catastrophes
-        hash ^= self.board.catastrophes.0.low_u64().wrapping_mul(0x1b873593);
-        
-        // Hash monuments
-        hash ^= self.board.monuments.0.low_u64().wrapping_mul(0xe6546b64);
-        
-        hash
     }
+    
+    // Hash player turn
+    if state.next_player() == Player::Player1 {
+        hash ^= *PLAYER_TURN_HASH;
+    }
+    
+    // Hash catastrophes
+    hash ^= state.board.catastrophes.0.low_u64().wrapping_mul(0x1b873593);
+    
+    // Hash monuments
+    hash ^= state.board.monuments.0.low_u64().wrapping_mul(0xe6546b64);
+    
+    hash
 }
 
-impl TnEMove {
-    pub fn new(old_state: TnEGame, action: Action) -> Self {
-        Self {
-            old_state,
-            move_: action,
-        }
-    }
-}
-
-impl minimax::Move for TnEMove {
-    type G = TigrisAndEuphrates;
-
-    fn apply(&self, state: &mut <Self::G as minimax::Game>::S) {
-        match state.process(self.move_) {
-            Ok(_) => {}
-            Err(e) => {
-                dbg!(&state);
-                dbg!(self.move_);
-
-                // dbg!(ret);
-                // visualizer::play(state.clone());
-                panic!("{:#?}", e);
-            }
-        }
-    }
-
-    fn undo(&self, state: &mut <Self::G as minimax::Game>::S) {
-        *state = self.old_state.clone();
-    }
-}
+/// Re-export of the Action type as the move type for external usage
+pub type TnEMove = Action;
 
 impl minimax::Game for TigrisAndEuphrates {
     type S = TnEGame;
-    type M = TnEMove;
+    type M = Action;  // Action is Copy
 
     fn generate_moves(state: &Self::S, moves: &mut Vec<Self::M>) {
         let action = state.next_action();
@@ -127,7 +90,7 @@ impl minimax::Game for TigrisAndEuphrates {
         scored_moves.sort_by(|a, b| b.0.cmp(&a.0));
         
         for (_, a) in scored_moves {
-            moves.push(TnEMove::new(state.clone(), a));
+            moves.push(a);
         }
     }
 
@@ -143,8 +106,26 @@ impl minimax::Game for TigrisAndEuphrates {
         }
     }
 
-    fn is_player1_turn(state: &Self::S) -> bool {
-        state.next_player() == Player::Player1
+    fn apply(state: &mut Self::S, m: Self::M) -> Option<Self::S> {
+        let old_state = state.clone();
+        match state.process(m) {
+            Ok(_) => Some(old_state),
+            Err(e) => {
+                dbg!(&state);
+                dbg!(m);
+                panic!("{:#?}", e);
+            }
+        }
+    }
+
+    fn undo(state: &mut Self::S, _m: Self::M) {
+        // We don't use the move for undo - the caller handles restoring state
+        // from apply's return value
+        let _ = state;
+    }
+    
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        compute_zobrist_hash(state)
     }
 }
 
@@ -211,6 +192,9 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
         // Monuments can be very powerful
         Action::BuildMonument(_) => 700,
         
+        // Declining a monument is usually suboptimal but valid
+        Action::DeclineMonument => 50,
+        
         // Replacing tiles is a minor action
         Action::ReplaceTile(_) => 100,
         
@@ -220,7 +204,7 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
 }
 
 impl PlayerAction {
-    pub(crate) fn generate_moves(&self, state: &TnEGame) -> Vec<Action> {
+    pub fn generate_moves(&self, state: &TnEGame) -> Vec<Action> {
         let current_player = state.next_player();
         let mut moves = vec![];
 
@@ -438,7 +422,7 @@ mod tests {
 
             match m {
                 Some(mv) => {
-                    mv.apply(&mut game);
+                    TigrisAndEuphrates::apply(&mut game, mv);
                     move_count += 1;
                 }
                 None => break,

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tigris & Euphrates</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Tigris & Euphrates</h1>
+            <div id="mode-selector">
+                <button id="btn-human-vs-ai" class="mode-btn active">Human vs AI</button>
+                <button id="btn-ai-vs-ai" class="mode-btn">AI vs AI</button>
+            </div>
+        </header>
+
+        <main>
+            <div id="game-container">
+                <!-- Player 1 (Human) Info Panel -->
+                <div id="player1-panel" class="player-panel">
+                    <h2>Player 1 (You)</h2>
+                    <div class="scores">
+                        <div class="score-row">
+                            <span class="tile red"></span>
+                            <span id="p1-score-red">0</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="tile blue"></span>
+                            <span id="p1-score-blue">0</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="tile green"></span>
+                            <span id="p1-score-green">0</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="tile black"></span>
+                            <span id="p1-score-black">0</span>
+                        </div>
+                        <div class="score-row treasure">
+                            <span class="treasure-icon">💎</span>
+                            <span id="p1-score-treasure">0</span>
+                        </div>
+                    </div>
+                    <div class="final-score">
+                        Final: <span id="p1-final-score">0</span>
+                    </div>
+                    <div class="hand" id="p1-hand">
+                        <!-- Hand tiles rendered by JS -->
+                    </div>
+                    <div class="leaders" id="p1-leaders">
+                        <!-- Available leaders rendered by JS -->
+                    </div>
+                    <div class="catastrophes">
+                        Catastrophes: <span id="p1-catastrophes">2</span>
+                    </div>
+                </div>
+
+                <!-- Game Board -->
+                <div id="board-container">
+                    <div id="board">
+                        <!-- Board cells rendered by JS -->
+                    </div>
+                    <div id="game-status">
+                        <span id="current-player">Player 1's turn</span>
+                        <span id="game-state">Normal action</span>
+                    </div>
+                </div>
+
+                <!-- Player 2 (AI) Info Panel -->
+                <div id="player2-panel" class="player-panel">
+                    <h2>Player 2 (AI)</h2>
+                    <div class="ai-settings">
+                        <label for="ai-depth">AI Strength:</label>
+                        <select id="ai-depth">
+                            <option value="1">Easy (Depth 1)</option>
+                            <option value="2">Medium (Depth 2)</option>
+                            <option value="3" selected>Hard (Depth 3)</option>
+                            <option value="4">Expert (Depth 4)</option>
+                        </select>
+                    </div>
+                    <div class="scores">
+                        <div class="score-row">
+                            <span class="tile red"></span>
+                            <span id="p2-score-red">0</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="tile blue"></span>
+                            <span id="p2-score-blue">0</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="tile green"></span>
+                            <span id="p2-score-green">0</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="tile black"></span>
+                            <span id="p2-score-black">0</span>
+                        </div>
+                        <div class="score-row treasure">
+                            <span class="treasure-icon">💎</span>
+                            <span id="p2-score-treasure">0</span>
+                        </div>
+                    </div>
+                    <div class="final-score">
+                        Final: <span id="p2-final-score">0</span>
+                    </div>
+                    <div class="hand hidden" id="p2-hand">
+                        <!-- Hand tiles (hidden for AI) -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Bar -->
+            <div id="action-bar">
+                <button id="btn-pass" class="action-btn">Pass</button>
+                <button id="btn-undo" class="action-btn" disabled>Undo</button>
+                <button id="btn-new-game" class="action-btn">New Game</button>
+            </div>
+
+            <!-- Support Dialog -->
+            <div id="support-dialog" class="dialog hidden">
+                <div class="dialog-content">
+                    <h3>Add Support</h3>
+                    <p>How many tiles do you want to commit?</p>
+                    <div id="support-options">
+                        <!-- Support buttons rendered by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Monument Dialog -->
+            <div id="monument-dialog" class="dialog hidden">
+                <div class="dialog-content">
+                    <h3>Build Monument</h3>
+                    <p>Choose a monument to build:</p>
+                    <div id="monument-options">
+                        <!-- Monument options rendered by JS -->
+                    </div>
+                    <button id="btn-decline-monument" class="action-btn">Decline</button>
+                </div>
+            </div>
+
+            <!-- War Select Leader Dialog -->
+            <div id="war-leader-dialog" class="dialog hidden">
+                <div class="dialog-content">
+                    <h3>Select Leader to Resolve</h3>
+                    <p>Choose which conflict to resolve first:</p>
+                    <div id="war-leader-options">
+                        <!-- Leader options rendered by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game Over Dialog -->
+            <div id="game-over-dialog" class="dialog hidden">
+                <div class="dialog-content">
+                    <h2>Game Over!</h2>
+                    <p id="winner-text"></p>
+                    <div id="final-scores">
+                        <div class="final-score-row">
+                            <span>Player 1:</span>
+                            <span id="final-p1-score">0</span>
+                        </div>
+                        <div class="final-score-row">
+                            <span>Player 2:</span>
+                            <span id="final-p2-score">0</span>
+                        </div>
+                    </div>
+                    <button id="btn-play-again" class="action-btn large">Play Again</button>
+                </div>
+            </div>
+
+            <!-- AI vs AI Controls -->
+            <div id="ai-vs-ai-controls" class="hidden">
+                <button id="btn-ai-step" class="action-btn">Step</button>
+                <button id="btn-ai-play" class="action-btn">Auto Play</button>
+                <button id="btn-ai-pause" class="action-btn hidden">Pause</button>
+                <div class="speed-control">
+                    <label for="ai-speed">Speed:</label>
+                    <input type="range" id="ai-speed" min="100" max="2000" value="500">
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Tigris & Euphrates - A classic board game by Reiner Knizia</p>
+        </footer>
+    </div>
+
+    <!-- Loading Indicator -->
+    <div id="loading" class="hidden">
+        <div class="spinner"></div>
+        <p>AI is thinking...</p>
+    </div>
+
+    <script type="module" src="game.js"></script>
+</body>
+</html>

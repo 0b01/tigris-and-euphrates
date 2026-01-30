@@ -7,3 +7,6 @@ pub mod visualizer;
 
 #[cfg(feature = "python")]
 pub mod interop;
+
+#[cfg(feature = "wasm")]
+pub mod wasm;
