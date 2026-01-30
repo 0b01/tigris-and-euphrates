@@ -1994,12 +1994,9 @@ impl Board {
                     .unwrap_or_default();
                 let nearby_empty_cells = !kingdom.map & neighbor_mask;
 
-                for (rr, row) in count.iter_mut().enumerate() {
-                    for (cc, c) in row.iter_mut().enumerate() {
-                        if nearby_empty_cells.get(pos!(rr as u8, cc as u8)) {
-                            *c += 1;
-                        }
-                    }
+                // Iterate only over set bits instead of all cells
+                for pos in nearby_empty_cells.iter() {
+                    count[pos.x as usize][pos.y as usize] += 1;
                 }
             }
         }
