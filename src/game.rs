@@ -411,6 +411,10 @@ impl TnEGame {
                 if self.board.get_leader(pos) == Leader::None {
                     return Err(Error::CannotWithdrawLeader);
                 }
+                // Check that the current player owns this leader
+                if self.board.get_player(pos) != current_player {
+                    return Err(Error::CannotMoveOtherLeader);
+                }
             }
             Action::ReplaceTile(Tiles {
                 red,
@@ -732,6 +736,15 @@ impl TnEGame {
                         unification_tile_pos: to,
                         unification_tile_type: tile_type,
                     });
+
+                    // Remove the tile from player's hand
+                    match tile_type {
+                        TileType::Blue => curr_player.hand_blue -= 1,
+                        TileType::Green => curr_player.hand_green -= 1,
+                        TileType::Red => curr_player.hand_red -= 1,
+                        TileType::Black => curr_player.hand_black -= 1,
+                        TileType::Empty => unreachable!(),
+                    }
 
                     // attacker can select which leader to resolve first
                     self.play_action_stack.push((
@@ -1361,7 +1374,11 @@ impl Tiles {
 
     #[must_use]
     fn draw_to_6(&mut self, player: &mut PlayerState) -> Option<()> {
-        let n = 6 - player.hand_sum();
+        let hand_sum = player.hand_sum();
+        if hand_sum >= 6 {
+            return Some(()); // Already have 6 or more tiles
+        }
+        let n = 6 - hand_sum;
         self.player_draw(player, n)
     }
 
@@ -3040,6 +3057,52 @@ mod tests {
     }
 
     #[test]
+    fn external_conflict_removes_tile_from_hand() {
+        let mut game = TnEGame::new();
+
+        // player 1 place a leader and a tile
+        ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        })
+        .unwrap();
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 2),
+            tile_type: TileType::Red,
+        })
+        .unwrap();
+
+        // player 2 places a leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 3),
+            leader: Leader::Red,
+        })
+        .unwrap();
+        
+        // Ensure player 2 has exactly 1 red tile and record hand size
+        game.players.get_mut(Player::Player2).hand_red = 1;
+        game.players.get_mut(Player::Player2).hand_blue = 2;
+        game.players.get_mut(Player::Player2).hand_green = 2;
+        game.players.get_mut(Player::Player2).hand_black = 1;
+        
+        let hand_before = game.players.get(Player::Player2).hand_sum();
+        let red_before = game.players.get(Player::Player2).hand_red;
+        
+        // player 2 places a tile joining two kingdoms - triggers external conflict
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 1),
+            tile_type: TileType::Red,
+        })
+        .unwrap();
+        
+        // Verify the tile was removed from hand
+        assert!(game.external_conflict.is_some());
+        assert_eq!(game.players.get(Player::Player2).hand_red, red_before - 1);
+        assert_eq!(game.players.get(Player::Player2).hand_sum(), hand_before - 1);
+    }
+
+    #[test]
     fn place_tile_does_not_trigger_external_conflict() {
         let mut game = TnEGame::new();
         ensure_player_has_at_least_1_color(game.players.get_mut(Player::Player1), TileType::Red);
@@ -3456,7 +3519,11 @@ mod tests {
         }).unwrap();
         game.process(Action::Pass).unwrap();
         
-        // Withdraw the leader
+        // Player 2's turn - pass both actions
+        game.process(Action::Pass).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Now it's Player 1's turn again - withdraw the leader
         let ret = game.process(Action::WithdrawLeader(pos!(0, 1)));
         assert!(ret.is_ok());
         assert_eq!(game.board.get_leader(pos!(0, 1)), Leader::None);
@@ -3470,6 +3537,22 @@ mod tests {
         // Try to withdraw from empty position
         let ret = game.process(Action::WithdrawLeader(pos!(0, 0)));
         assert_eq!(ret.unwrap_err(), Error::CannotWithdrawLeader);
+    }
+
+    #[test]
+    fn test_cannot_withdraw_opponent_leader() {
+        let mut game = TnEGame::new();
+        
+        // Player 1 places a leader
+        game.process(Action::PlaceLeader {
+            pos: pos!(0, 1),
+            leader: Leader::Red,
+        }).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Player 2 tries to withdraw Player 1's leader - this should fail
+        let ret = game.process(Action::WithdrawLeader(pos!(0, 1)));
+        assert_eq!(ret.unwrap_err(), Error::CannotMoveOtherLeader);
     }
 
     // ==================== WAR OUTCOMES ====================
