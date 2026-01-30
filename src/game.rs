@@ -2196,34 +2196,36 @@ impl Board {
     pub fn find_kingdom(&self, pos: Pos, visited: &mut Bitboard) -> Kingdom {
         let mut kingdom = Kingdom::default();
 
-        let mut stack = pos.mask();
-        let mut map = Bitboard::new();
-
-        while let Some(pos) = stack.pop() {
-            if visited.get(pos) {
-                continue;
-            }
-            *visited |= pos.mask();
-
-            if !self.is_connectable(pos) {
-                continue;
-            }
-
-            map |= pos.mask();
-
-            if self.get_treasure(pos) {
-                match &mut kingdom.treasures {
-                    [None, None] => kingdom.treasures[0] = Some(pos),
-                    [Some(_), None] => kingdom.treasures[1] = Some(pos),
-                    [Some(_), Some(_)] => (), // just ignore if kingdom has 3 treasures
-                    _ => unreachable!(),
-                }
-            }
-
-            stack |= pos.neighbors();
+        // Use fast bitboard flood-fill instead of stack-based approach
+        let connectable = self.connectable_bitboard();
+        let start = pos.mask() & connectable;
+        
+        if start.0.is_zero() {
+            return kingdom;
         }
-
+        
+        let mut map = start;
+        loop {
+            let expanded = map.dilate() & connectable;
+            let new_map = map | expanded;
+            if (new_map.0 ^ map.0).is_zero() {
+                break;
+            }
+            map = new_map;
+        }
+        
+        *visited |= map;
         kingdom.map = map;
+
+        // Find treasures using bitboard intersection
+        let treasure_positions = map & self.treasures;
+        let mut treasure_iter = treasure_positions.iter();
+        if let Some(t1) = treasure_iter.next() {
+            kingdom.treasures[0] = Some(t1);
+            if let Some(t2) = treasure_iter.next() {
+                kingdom.treasures[1] = Some(t2);
+            }
+        }
 
         kingdom.red_tiles = (map & self.red_tiles).count_ones();
         kingdom.blue_tiles = (map & self.blue_tiles).count_ones();
