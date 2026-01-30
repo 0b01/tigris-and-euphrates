@@ -1688,19 +1688,33 @@ impl PlayerState {
         // 100 points for each final score
         s += self.calculate_score() as i16 * 20;
 
+        // Precompute connectable positions once
+        let connectable = state.board.connectable_bitboard();
+        let mut visited = Bitboard::new();
+
         for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
             if let Some(pos) = self.get_leader(leader) {
-                // 5 points for nearby red tiles
-                for p in pos.neighbors().iter() {
-                    if state.board.get_tile_type(p) == TileType::Red {
-                        s += 10;
-                    }
-                }
+                // 5 points for nearby red tiles (use bitboard intersection)
+                let neighbors = pos.neighbors();
+                let nearby_red_count = (neighbors & state.board.red_tiles).count_ones();
+                s += nearby_red_count as i16 * 10;
 
                 // 5 points for each matching tile in kingdom
-                let mut visited = Bitboard::new();
-                let kingdom = state.board.find_kingdom(pos, &mut visited);
-                s += kingdom.get_leader_info(leader).unwrap().2 as i16 * 5;
+                // Only compute kingdom if not already visited
+                if !visited.get(pos) {
+                    let kingdom_map = state.board.find_kingdom_map_fast(pos, connectable);
+                    visited |= kingdom_map;
+                    
+                    // Count matching tiles using bitboard intersection
+                    let tile_count = match leader {
+                        Leader::Red => (kingdom_map & state.board.red_tiles).count_ones(),
+                        Leader::Blue => (kingdom_map & state.board.blue_tiles).count_ones(),
+                        Leader::Green => (kingdom_map & state.board.green_tiles).count_ones(),
+                        Leader::Black => (kingdom_map & state.board.black_tiles).count_ones(),
+                        Leader::None => 0,
+                    };
+                    s += tile_count as i16 * 5;
+                }
             }
         }
 
@@ -1805,7 +1819,10 @@ impl Bitboard {
     }
 
     pub fn get(&self, pos: Pos) -> bool {
-        (*self & pos.mask()).0 != U256::zero()
+        let index = pos.index();
+        let word_idx = index / 64;
+        let bit_idx = index % 64;
+        (self.0.0[word_idx] & (1u64 << bit_idx)) != 0
     }
 
     /// Get the first set bit position without modifying the bitboard
