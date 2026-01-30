@@ -570,21 +570,28 @@ impl TnEGame {
                             (defender, attacker, c.attacker_pos)
                         };
 
+                        let conflict_leader = c.conflict_leader;
                         let tiles_to_remove = self
                             .board
-                            .find_disintegrable_tiles(loser_pos, c.conflict_leader.as_tile_type());
+                            .find_disintegrable_tiles(loser_pos, conflict_leader.as_tile_type());
 
                         // remove loser
-                        self.players.get_mut(loser).set_leader(c.conflict_leader, None);
+                        self.players.get_mut(loser).set_leader(conflict_leader, None);
                         self.board.set_leader(loser_pos, Leader::None);
                         self.board.set_player(loser_pos, Player::None);
                         // give winner 1 point
                         self.players
                             .get_mut(winner)
-                            .add_score(c.conflict_leader.as_tile_type());
+                            .add_score(conflict_leader.as_tile_type());
 
                         // disintegrate tiles
                         let points = tiles_to_remove.count_ones() as u8;
+                        // Collect positions adjacent to removed tiles for later temple check
+                        let mut positions_to_check = Bitboard::new();
+                        for pos in tiles_to_remove.iter() {
+                            positions_to_check |= pos.neighbors();
+                        }
+                        
                         for pos in tiles_to_remove.iter() {
                             self.board.set_tile_type(pos, TileType::Empty);
                             self.board.set_leader(pos, Leader::None);
@@ -592,16 +599,19 @@ impl TnEGame {
                         }
                         self.players
                             .get_mut(winner)
-                            .add_score_by(c.conflict_leader.as_tile_type(), points);
+                            .add_score_by(conflict_leader.as_tile_type(), points);
 
-                        let leader = c.conflict_leader;
+                        // After removing tiles, check if any leaders are no longer adjacent to temples
+                        for pos in positions_to_check.iter() {
+                            self.evict_leader_if_not_adjacent_to_temple(pos);
+                        }
 
                         // remove the leader we just resolved from external conflicts
                         self.external_conflict
                             .as_mut()
                             .unwrap()
                             .conflicts
-                            .retain(|con| con.conflict_leader != leader);
+                            .retain(|con| con.conflict_leader != conflict_leader);
 
                         // credit unification cell
                         let ExternalConflict {
@@ -679,8 +689,9 @@ impl TnEGame {
 
                 curr_player.num_catastrophes -= 1;
 
+                // Evict leaders only if they are no longer adjacent to any temple
                 for neighbor in to.neighbors().iter() {
-                    self.evict_leader(neighbor);
+                    self.evict_leader_if_not_adjacent_to_temple(neighbor);
                 }
 
                 Some(GameState::Normal)
@@ -1152,6 +1163,20 @@ impl TnEGame {
                 .set_leader(self.board.get_leader(pos), None);
             self.board.set_leader(pos, Leader::None);
             self.board.set_player(pos, Player::None)
+        }
+    }
+
+    /// Evict a leader only if it is no longer adjacent to any temple (red tile)
+    fn evict_leader_if_not_adjacent_to_temple(&mut self, leader_pos: Pos) {
+        if self.board.get_leader(leader_pos) == Leader::None {
+            return;
+        }
+        // Check if leader is still adjacent to at least one temple
+        let still_adjacent = leader_pos.neighbors().iter().any(|neighbor| {
+            self.board.get_tile_type(neighbor) == TileType::Red
+        });
+        if !still_adjacent {
+            self.evict_leader(leader_pos);
         }
     }
 }
@@ -2309,6 +2334,11 @@ impl Board {
         let mut ret = Bitboard::new();
         let mut visited = Bitboard::new();
         let mut stack = loser_pos.mask();
+        
+        // In a priest war (red leader conflict), temples adjacent to leaders
+        // or bearing treasures are protected and cannot be removed
+        let is_priest_war = tile_type == TileType::Red;
+        
         while let Some(pos) = stack.pop() {
             if visited.get(pos) {
                 continue;
@@ -2321,14 +2351,21 @@ impl Board {
                 }
             }
 
-            // skip any red tiles that are next to a leader
-            let nearby_leader = pos.neighbors().iter().any(|pos| {
-                self.get_leader(pos) != Leader::None
-            });
-            let leader_near_red = self.get_tile_type(pos) == TileType::Red && nearby_leader;
-            // can't destroy monument tiles
+            // Check if this tile should be protected (only in priest wars)
+            let is_protected = if is_priest_war && self.get_tile_type(pos) == TileType::Red {
+                // Temple is protected if it has a treasure or is adjacent to any leader
+                let has_treasure = self.treasures.get(pos);
+                let nearby_leader = pos.neighbors().iter().any(|neighbor_pos| {
+                    self.get_leader(neighbor_pos) != Leader::None
+                });
+                has_treasure || nearby_leader
+            } else {
+                false
+            };
+            
+            // can't destroy monument tiles or protected temples
             if self.get_tile_type(pos) == tile_type
-                && !leader_near_red
+                && !is_protected
                 && !self.get_monument(pos)
             {
                 ret.set(pos);
@@ -3436,6 +3473,76 @@ mod tests {
         // Try to place catastrophe on monument position
         let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
         assert_eq!(ret.unwrap_err(), Error::CannotPlaceCatastropheOnMonument);
+    }
+
+    #[test]
+    fn test_catastrophe_only_evicts_leader_without_adjacent_temple() {
+        let mut game = TnEGame::new();
+        
+        // Place a red tile (temple) at (0,0)
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile {
+            pos: pos!(0, 0),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Place a leader adjacent to both the new temple and the pre-existing temple at (1,1)
+        // Position (1,0) is adjacent to both (0,0) and (1,1)
+        game.process(Action::PlaceLeader {
+            pos: pos!(1, 0),
+            leader: Leader::Red,
+        }).unwrap();
+        
+        // Player 2's turn
+        game.process(Action::Pass).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Now Player 1 places catastrophe on (0,0) - destroying the temple
+        // Leader at (1,0) should NOT be evicted because it's still adjacent to temple at (1,1)
+        let ret = game.process(Action::PlaceCatastrophe(pos!(0, 0)));
+        assert!(ret.is_ok());
+        assert!(game.board.get_catastrophe(pos!(0, 0)));
+        // Leader should still be at (1,0) because (1,1) is a temple adjacent to it
+        assert_eq!(game.board.get_leader(pos!(1, 0)), Leader::Red);
+    }
+
+    #[test]
+    fn test_catastrophe_evicts_leader_when_no_adjacent_temple() {
+        let mut game = TnEGame::new();
+        
+        // Place a red tile (temple) at (5,0) - this is not on river
+        game.players.0[0].hand_red = 2;
+        game.process(Action::PlaceTile {
+            pos: pos!(5, 0),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Place another red tile at (5,1) to have two adjacent temples for the leader
+        game.process(Action::PlaceTile {
+            pos: pos!(5, 1),
+            tile_type: TileType::Red,
+        }).unwrap();
+        
+        // Player 2's turn - pass
+        game.process(Action::Pass).unwrap();
+        game.process(Action::Pass).unwrap();
+        
+        // Place a leader at (4,0) - adjacent to temple at (5,0)
+        // But (4,0) is also adjacent to the river/nothing else
+        game.process(Action::PlaceLeader {
+            pos: pos!(4, 0),
+            leader: Leader::Red,
+        }).unwrap();
+        
+        // Place catastrophe at (5,0) - destroying one adjacent temple
+        // Leader at (4,0) should be evicted because there's no other temple adjacent
+        // (4,0)'s neighbors are (3,0)=river, (5,0)=catastrophe target, (4,1)=empty
+        let ret = game.process(Action::PlaceCatastrophe(pos!(5, 0)));
+        assert!(ret.is_ok());
+        assert!(game.board.get_catastrophe(pos!(5, 0)));
+        // Leader should be removed because (5,0) was the only adjacent temple
+        assert_eq!(game.board.get_leader(pos!(4, 0)), Leader::None);
+        assert!(game.players.0[0].placed_red_leader.is_none());
     }
 
     // ==================== RIVER/BLUE TILE TESTS ====================
