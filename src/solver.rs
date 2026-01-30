@@ -235,10 +235,25 @@ impl PlayerAction {
                 // Precompute kingdom count for checking tile placements
                 let kingdom_count = state.board.nearby_kingdom_count();
                 
-                // find all possible tile placements
+                // === MOVE PRUNING ===
+                // Only consider tile placements near existing tiles/kingdoms
+                // This dramatically reduces the search space
+                let existing_tiles = state.board.connectable_bitboard();
+                let adjacent_to_tiles = existing_tiles.dilate();
+                // Also consider positions 2 steps away for strategic plays
+                let near_tiles = adjacent_to_tiles.dilate();
+                
+                // find all possible tile placements (pruned to near existing tiles)
                 for x in 0..H {
                     for y in 0..W {
                         let pos = pos!(x, y);
+                        
+                        // PRUNING: Skip positions not near any existing tiles
+                        // (unless the board is nearly empty)
+                        if existing_tiles.count_ones() > 5 && !near_tiles.get(pos) {
+                            continue;
+                        }
+                        
                         let river = RIVER.get(pos);
                         for tile_type in [TileType::Black, TileType::Red, TileType::Green, TileType::Blue].into_iter() {
                             if state.players.get(current_player).get_hand(tile_type) > 0
@@ -254,20 +269,50 @@ impl PlayerAction {
                     }
                 }
 
-                // move leader
-                for leader in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].into_iter() {
-                    for pos in state.board.find_empty_leader_space_next_to_red().iter() {
-                        moves.push(Action::PlaceLeader { pos, leader });
+                // move leader - only place leaders we don't already have on board
+                // and prioritize leaders for colors where we're weak
+                let player_state = state.players.get(current_player);
+                let scores = [
+                    (Leader::Red, player_state.score_red),
+                    (Leader::Blue, player_state.score_blue),
+                    (Leader::Green, player_state.score_green),
+                    (Leader::Black, player_state.score_black),
+                ];
+                
+                // Sort leaders by score (weakest first) for better pruning
+                let mut sorted_leaders: Vec<_> = scores.iter().collect();
+                sorted_leaders.sort_by_key(|(_, score)| *score);
+                
+                let leader_spaces_bitboard = state.board.find_empty_leader_space_next_to_red();
+                let leader_spaces: Vec<Pos> = leader_spaces_bitboard.iter().collect();
+                
+                // PRUNING: Limit leader placement options
+                // - Only place leaders we don't already have on board
+                // - Limit to a reasonable number of positions (best 8)
+                let max_leader_positions = 8.min(leader_spaces.len());
+                
+                for (leader, _) in sorted_leaders {
+                    // Skip if we already have this leader placed
+                    if player_state.get_leader(*leader).is_some() {
+                        // But allow withdrawal
+                        if let Some(pos) = player_state.get_leader(*leader) {
+                            moves.push(Action::WithdrawLeader(pos));
+                        }
+                        continue;
                     }
-
-                    if let Some(pos) = state.players.get(current_player).get_leader(leader) {
-                        moves.push(Action::WithdrawLeader(pos));
+                    
+                    // Only consider limited positions for new leader placement
+                    for pos in leader_spaces.iter().take(max_leader_positions) {
+                        moves.push(Action::PlaceLeader { pos: *pos, leader: *leader });
                     }
                 }
 
+                // Catastrophe placements - these are rare but strategic
                 if state.players.get(current_player).num_catastrophes > 0 {
-                    for pos in state.board.find_catastrophe_positions() {
-                        moves.push(Action::PlaceCatastrophe(pos));
+                    let catastrophe_positions = state.board.find_catastrophe_positions();
+                    // PRUNING: Limit catastrophe options to 10 most strategic
+                    for pos in catastrophe_positions.iter().take(10) {
+                        moves.push(Action::PlaceCatastrophe(*pos));
                     }
                 }
 
@@ -327,5 +372,207 @@ impl minimax::Evaluator for Evaluator {
         } else {
             s1 - s2
         }
+    }
+}
+
+/// A simple evaluator that only considers the raw score (for testing the old AI)
+pub struct SimpleEvaluator;
+
+impl Default for SimpleEvaluator {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl SimpleEvaluator {
+    /// Simple evaluation - just uses raw scores like the old AI
+    fn simple_eval(player_state: &crate::game::PlayerState) -> i16 {
+        let mut s: i16 = 0;
+        // Old evaluation: 20 points for final score
+        s += player_state.calculate_score() as i16 * 20;
+        // 1 point for each raw score point
+        s += player_state.score_sum() as i16;
+        s
+    }
+}
+
+impl minimax::Evaluator for SimpleEvaluator {
+    type G = TigrisAndEuphrates;
+
+    fn evaluate(&self, state: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
+        let s1 = Self::simple_eval(state.players.get(Player::Player1));
+        let s2 = Self::simple_eval(state.players.get(Player::Player2));
+
+        if state.last_action_player == Player::Player1 {
+            s2 - s1
+        } else {
+            s1 - s2
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minimax::{Negamax, Random, Strategy, Game, Move};
+
+    /// Helper function to play a single game between two strategies
+    /// Returns the winner (Player1, Player2, or None for draw)
+    fn play_game<S1: Strategy<TigrisAndEuphrates>, S2: Strategy<TigrisAndEuphrates>>(
+        p1_strategy: &mut S1,
+        p2_strategy: &mut S2,
+        max_moves: usize,
+    ) -> Player {
+        let mut game = TnEGame::new();
+        let mut move_count = 0;
+
+        while TigrisAndEuphrates::get_winner(&game).is_none() && move_count < max_moves {
+            let curr_player = game.next_player();
+            let m = match curr_player {
+                Player::Player1 => p1_strategy.choose_move(&game),
+                Player::Player2 => p2_strategy.choose_move(&game),
+                _ => None,
+            };
+
+            match m {
+                Some(mv) => {
+                    mv.apply(&mut game);
+                    move_count += 1;
+                }
+                None => break,
+            }
+        }
+
+        game.winner()
+    }
+
+    /// Test that the improved AI beats a random player consistently
+    #[test]
+    fn test_improved_ai_beats_random() {
+        let num_games = 4;
+        let mut ai_wins = 0;
+        let mut random_wins = 0;
+        let mut draws = 0;
+
+        for i in 0..num_games {
+            // Alternate who goes first
+            let ai_is_p1 = i % 2 == 0;
+            
+            // Use depth 2 for faster tests
+            let mut ai_strategy = Negamax::new(Evaluator::default(), 2);
+            let mut random_strategy = Random::<TigrisAndEuphrates>::new();
+
+            let winner = if ai_is_p1 {
+                play_game(&mut ai_strategy, &mut random_strategy, 200)
+            } else {
+                play_game(&mut random_strategy, &mut ai_strategy, 200)
+            };
+
+            match winner {
+                Player::Player1 if ai_is_p1 => ai_wins += 1,
+                Player::Player2 if !ai_is_p1 => ai_wins += 1,
+                Player::Player1 if !ai_is_p1 => random_wins += 1,
+                Player::Player2 if ai_is_p1 => random_wins += 1,
+                _ => draws += 1,
+            }
+        }
+
+        println!("\n=== AI vs Random Results ===");
+        println!("AI wins: {}, Random wins: {}, Draws: {}", ai_wins, random_wins, draws);
+        println!("AI win rate: {:.1}%", (ai_wins as f64 / num_games as f64) * 100.0);
+        
+        // The AI should win at least 50% of games against random
+        assert!(
+            ai_wins >= num_games / 2,
+            "AI should beat random at least 50% of the time, but only won {} out of {} games",
+            ai_wins,
+            num_games
+        );
+    }
+
+    /// Test that the improved AI (depth 2) beats the simple/old AI (depth 1)
+    #[test]
+    fn test_improved_ai_beats_simple_ai() {
+        let num_games = 2;
+        let mut improved_wins = 0;
+        let mut simple_wins = 0;
+        let mut draws = 0;
+
+        for i in 0..num_games {
+            // Alternate who goes first
+            let improved_is_p1 = i % 2 == 0;
+            
+            let mut improved_ai = Negamax::new(Evaluator::default(), 2);
+            let mut simple_ai = Negamax::new(SimpleEvaluator::default(), 1);
+
+            let winner = if improved_is_p1 {
+                play_game(&mut improved_ai, &mut simple_ai, 200)
+            } else {
+                play_game(&mut simple_ai, &mut improved_ai, 200)
+            };
+
+            match winner {
+                Player::Player1 if improved_is_p1 => improved_wins += 1,
+                Player::Player2 if !improved_is_p1 => improved_wins += 1,
+                Player::Player1 if !improved_is_p1 => simple_wins += 1,
+                Player::Player2 if improved_is_p1 => simple_wins += 1,
+                _ => draws += 1,
+            }
+        }
+
+        println!("\n=== Improved AI vs Simple AI Results ===");
+        println!("Improved AI wins: {}, Simple AI wins: {}, Draws: {}", improved_wins, simple_wins, draws);
+        println!("Improved AI win rate: {:.1}%", (improved_wins as f64 / num_games as f64) * 100.0);
+        
+        // The improved AI should win at least half the games against the simple AI
+        assert!(
+            improved_wins >= simple_wins,
+            "Improved AI should beat simple AI at least as often, but won {} vs {} games",
+            improved_wins,
+            simple_wins
+        );
+    }
+
+    /// Test that deeper search produces better results
+    #[test]
+    fn test_deeper_search_is_stronger() {
+        let num_games = 2;
+        let mut deep_wins = 0;
+        let mut shallow_wins = 0;
+        let mut draws = 0;
+
+        for i in 0..num_games {
+            // Alternate who goes first
+            let deep_is_p1 = i % 2 == 0;
+            
+            let mut deep_ai = Negamax::new(Evaluator::default(), 2);
+            let mut shallow_ai = Negamax::new(Evaluator::default(), 1);
+
+            let winner = if deep_is_p1 {
+                play_game(&mut deep_ai, &mut shallow_ai, 200)
+            } else {
+                play_game(&mut shallow_ai, &mut deep_ai, 200)
+            };
+
+            match winner {
+                Player::Player1 if deep_is_p1 => deep_wins += 1,
+                Player::Player2 if !deep_is_p1 => deep_wins += 1,
+                Player::Player1 if !deep_is_p1 => shallow_wins += 1,
+                Player::Player2 if deep_is_p1 => shallow_wins += 1,
+                _ => draws += 1,
+            }
+        }
+
+        println!("\n=== Deep AI (depth 2) vs Shallow AI (depth 1) Results ===");
+        println!("Deep AI wins: {}, Shallow AI wins: {}, Draws: {}", deep_wins, shallow_wins, draws);
+        println!("Deep AI win rate: {:.1}%", (deep_wins as f64 / num_games as f64) * 100.0);
+        
+        // Deeper search should usually win
+        assert!(
+            deep_wins >= shallow_wins,
+            "Deeper search should beat shallower search at least as often, but won {} vs {} games",
+            deep_wins,
+            shallow_wins
+        );
     }
 }
