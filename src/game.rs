@@ -875,16 +875,11 @@ impl TnEGame {
         }
 
         if let Some((player_2, p2_pos)) = has_conflict {
-            let attacker_base_strength = pos
-                .neighbors().iter()
-                .map(|n| self.board.get_tile_type(n))
-                .filter(|t| *t == TileType::Red)
-                .count() as u8;
-            let defender_base_strength = p2_pos
-                .neighbors().iter()
-                .map(|n| self.board.get_tile_type(n))
-                .filter(|t| *t == TileType::Red)
-                .count() as u8;
+            // Use bitboard intersection for fast red tile counting
+            let attacker_neighbors = pos.neighbors();
+            let attacker_base_strength = (attacker_neighbors & self.board.red_tiles).count_ones();
+            let defender_neighbors = p2_pos.neighbors();
+            let defender_base_strength = (defender_neighbors & self.board.red_tiles).count_ones();
             self.internal_conflict = Some(Conflict {
                 is_internal: true,
                 attacker: current_player,
@@ -1488,10 +1483,12 @@ pub const fn pos(a: &'static str) -> Pos {
 }
 
 impl Pos {
+    #[inline]
     fn neighbors(&self) -> Bitboard {
         NEIGHBORS_MASK[self.x as usize][self.y as usize]
     }
 
+    #[inline]
     fn right(&self) -> Pos {
         Self {
             x: self.x,
@@ -1499,6 +1496,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn left(&self) -> Pos {
         Self {
             x: self.x,
@@ -1506,6 +1504,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn up(&self) -> Pos {
         Self {
             x: self.x - 1,
@@ -1513,6 +1512,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn down(&self) -> Pos {
         Self {
             x: self.x + 1,
@@ -1520,10 +1520,12 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn index(&self) -> usize {
         self.x as usize * W + self.y as usize
     }
 
+    #[inline]
     fn from_index(index: usize) -> Pos {
         Pos {
             x: (index / W) as u8,
@@ -1531,6 +1533,7 @@ impl Pos {
         }
     }
 
+    #[inline]
     fn mask(&self) -> Bitboard {
         POS_TO_BITBOARD[self.x as usize][self.y as usize]
     }
@@ -2006,11 +2009,12 @@ impl Board {
         ret
     }
 
+    #[inline]
     pub fn is_connectable(&self, pos: Pos) -> bool {
-        self.get_tile_type(pos) != TileType::Empty
-            || self.get_leader(pos) != Leader::None
-            || self.unification_tile == Some(pos)
-            || self.get_monument(pos)
+        // Fast check using bitboard - avoids multiple function calls
+        let tiles = self.red_tiles | self.blue_tiles | self.green_tiles | self.black_tiles;
+        let leaders = self.leader_red | self.leader_blue | self.leader_green | self.leader_black;
+        (tiles | leaders | self.monuments).get(pos) || self.unification_tile == Some(pos)
     }
 
     /// Get a bitboard of all connectable positions on the board.
