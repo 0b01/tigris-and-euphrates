@@ -107,21 +107,25 @@ impl minimax::Game for TigrisAndEuphrates {
     }
 
     fn apply(state: &mut Self::S, m: Self::M) -> Option<Self::S> {
-        let old_state = state.clone();
-        match state.process(m) {
-            Ok(_) => Some(old_state),
+        // Clone the state, apply the move to the clone, and return the new state
+        // The minimax library will use this new state and keep the old one for undo
+        let mut new_state = state.clone();
+        match new_state.process(m) {
+            Ok(_) => {
+                // Return the new state - minimax will swap it in
+                Some(new_state)
+            }
             Err(e) => {
-                dbg!(&state);
-                dbg!(m);
-                panic!("{:#?}", e);
+                // This shouldn't happen if generate_moves is correct
+                eprintln!("Warning: Invalid move {:?} in state {:?}: {:?}", m, state.next_action(), e);
+                // Return None to indicate no change (skip this move)
+                None
             }
         }
     }
 
-    fn undo(state: &mut Self::S, _m: Self::M) {
-        // We don't use the move for undo - the caller handles restoring state
-        // from apply's return value
-        let _ = state;
+    fn undo(_state: &mut Self::S, _m: Self::M) {
+        // Not used when apply returns Some - the library handles state restoration
     }
     
     fn zobrist_hash(state: &Self::S) -> u64 {

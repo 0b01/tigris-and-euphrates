@@ -695,7 +695,7 @@ pub fn play(game: TnEGame) {
             icon: Some(icon),
             ..Default::default()
         },
-        run(game, true),
+        run(game, false),
     );
 }
 

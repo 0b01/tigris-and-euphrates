@@ -244,6 +244,12 @@ main {
     align-items: center;
 }
 
+#game-canvas {
+    border: 3px solid var(--accent-color);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
 #board {
     display: grid;
     grid-template-columns: repeat(16, 36px);
