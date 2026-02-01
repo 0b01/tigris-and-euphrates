@@ -52,31 +52,6 @@ static NEIGHBORS_MASK: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     mask
 });
 
-// Column masks for dilate operation - prevent wrap-around (compile-time constants)
-// Column 0: bits at positions 0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160
-const COL_0_MASK: Bitboard = Bitboard::from_binary([
-    0x0001_0001_0001_0001,
-    0x0001_0001_0001_0001,
-    0x0000_0001_0001_0001,
-    0x0
-]);
-
-// Column 15: bits at positions 15, 31, 47, 63, 79, 95, 111, 127, 143, 159, 175
-const COL_15_MASK: Bitboard = Bitboard::from_binary([
-    0x8000_8000_8000_8000,
-    0x8000_8000_8000_8000,
-    0x0000_8000_8000_8000,
-    0x0
-]);
-
-// Board boundary mask - only positions 0-175 are valid (11 rows x 16 columns)
-const BOARD_MASK: Bitboard = Bitboard::from_binary([
-    0xFFFF_FFFF_FFFF_FFFF,
-    0xFFFF_FFFF_FFFF_FFFF,
-    0x0000_FFFF_FFFF_FFFF,
-    0x0
-]);
-
 static POS_TO_BITBOARD: Lazy<[[Bitboard; W]; H]> = Lazy::new(|| {
     let mut ret = [[Bitboard::new(); W]; H];
     for x in 0..H {
@@ -179,6 +154,12 @@ pub struct TnEGame {
 
     /// War
     pub external_conflict: Option<ExternalConflict>,
+    
+    /// Action parity counter for minimax: counts total actions modulo 2.
+    /// Used to compensate for negamax's alternating-player assumption.
+    /// When true, we need to pre-negate to counteract minimax's negation.
+    #[serde(default)]
+    pub action_parity: bool,
 }
 
 impl std::fmt::Debug for TnEGame {
@@ -269,6 +250,7 @@ impl TnEGame {
             last_player: Player::None,
             last_action_player: Player::None,
             last_player_normal_action: Player::None,
+            action_parity: false,
         };
 
         // initial draw for players, each player draws 6 tiles
@@ -1055,6 +1037,10 @@ impl TnEGame {
         self.set_next_player_if_player_turn_over();
 
         self.last_player = current_player;
+        
+        // Toggle action parity for minimax compensation
+        self.action_parity = !self.action_parity;
+        
         Ok(self.next())
     }
 
@@ -1265,20 +1251,20 @@ pub struct ExternalConflict {
 /// occurs when placing same leaders in same kingdom
 #[derive(Debug, Clone, Copy, Eq, Serialize, Deserialize)]
 pub struct Conflict {
-    is_internal: bool,
+    pub is_internal: bool,
     pub conflict_leader: Leader,
 
-    attacker: Player,
+    pub attacker: Player,
     pub attacker_pos: Pos,
-    attacker_support: u8,
-    attacker_sent_support: bool,
-    attacker_base_strength: u8,
+    pub attacker_support: u8,
+    pub attacker_sent_support: bool,
+    pub attacker_base_strength: u8,
 
-    defender: Player,
+    pub defender: Player,
     pub defender_pos: Pos,
-    defender_support: u8,
-    defender_sent_support: bool,
-    defender_base_strength: u8,
+    pub defender_support: u8,
+    pub defender_sent_support: bool,
+    pub defender_base_strength: u8,
 }
 impl Conflict {
     fn all_sent(&self) -> bool {
@@ -1585,7 +1571,7 @@ pub const fn pos(a: &'static str) -> Pos {
 
 impl Pos {
     #[inline]
-    fn neighbors(&self) -> Bitboard {
+    pub fn neighbors(&self) -> Bitboard {
         NEIGHBORS_MASK[self.x as usize][self.y as usize]
     }
 
@@ -1638,6 +1624,13 @@ impl Pos {
     fn mask(&self) -> Bitboard {
         POS_TO_BITBOARD[self.x as usize][self.y as usize]
     }
+    
+    #[inline]
+    pub fn manhattan_distance(&self, other: Pos) -> u8 {
+        let dx = if self.x > other.x { self.x - other.x } else { other.x - self.x };
+        let dy = if self.y > other.y { self.y - other.y } else { other.y - self.y };
+        dx + dy
+    }
 }
 
 #[repr(packed)]
@@ -1659,7 +1652,7 @@ pub struct PlayerState {
     pub score_blue: u8,
 
     pub num_catastrophes: u8,
-    score_treasure: u8,
+    pub score_treasure: u8,
 }
 
 impl PlayerState {
@@ -1793,7 +1786,7 @@ impl PlayerState {
         // The game is won by the player with the highest minimum color score.
         // This is THE most important factor - weight it very heavily.
         let min_score = self.calculate_score() as i16;
-        s += min_score * 100;
+        s += min_score * 150;  // Increased from 100
 
         // === SCORE BALANCE ===
         // Having one weak color is a huge liability. Penalize imbalanced scores.
@@ -1801,17 +1794,17 @@ impl PlayerState {
         let max_color = *scores.iter().max().unwrap() as i16;
         let min_color = *scores.iter().min().unwrap() as i16;
         // Penalize imbalance - the bigger the gap, the worse
-        s -= (max_color - min_color) * 8;
+        s -= (max_color - min_color) * 5;  // Reduced penalty
 
         // === TREASURE VALUE ===
         // Treasures are wildcards - very valuable for filling gaps
-        s += self.score_treasure as i16 * 25;
+        s += self.score_treasure as i16 * 30;
 
         // === LEADER PRESENCE ===
-        // Leaders on the board can score points. No leader = no points for that color.
-        // Bonus for having leaders placed (especially for weak colors)
+        // Leaders on the board are ESSENTIAL for scoring. 
+        // Without leaders, you can't score points. Strongly reward having leaders placed.
         let mut leaders_placed = 0;
-        let mut weakest_leader_bonus = 0;
+        let mut leader_position_bonus = 0;
         for (leader, score) in [
             (Leader::Red, self.score_red),
             (Leader::Blue, self.score_blue),
@@ -1822,30 +1815,39 @@ impl PlayerState {
                 leaders_placed += 1;
                 // Extra bonus for leaders in colors where we're weak
                 if score == min_color as u8 {
-                    weakest_leader_bonus += 15;
+                    leader_position_bonus += 40;  // Strong bonus for weak color leaders
+                }
+                // Significant bonus just for having the leader on board
+                // This should make withdrawing very costly
+                leader_position_bonus += 35;
+            } else {
+                // Penalty for NOT having a leader on the board
+                // Especially bad if we're weak in that color
+                if score == min_color as u8 {
+                    s -= 25;
                 }
             }
         }
-        s += leaders_placed * 12;
-        s += weakest_leader_bonus;
+        s += leaders_placed * 30;  // Strong bonus per leader
+        s += leader_position_bonus;
 
         // === CONFLICT SUPPORT (Revolt/War Readiness) ===
         // Having tiles in hand that match our leaders is valuable for conflicts
         // Red tiles are especially important for revolt defense
-        s += (self.hand_red as i16).min(4) * 8; // Red for revolt support
+        s += (self.hand_red as i16).min(4) * 10;  // Increased red value
 
         // Tiles for war support in colors where we have leaders
         if self.placed_red_leader.is_some() {
-            s += (self.hand_red as i16).min(3) * 4;
+            s += (self.hand_red as i16).min(3) * 5;
         }
         if self.placed_blue_leader.is_some() {
-            s += (self.hand_blue as i16).min(3) * 4;
+            s += (self.hand_blue as i16).min(3) * 5;
         }
         if self.placed_green_leader.is_some() {
-            s += (self.hand_green as i16).min(3) * 4;
+            s += (self.hand_green as i16).min(3) * 5;
         }
         if self.placed_black_leader.is_some() {
-            s += (self.hand_black as i16).min(3) * 4;
+            s += (self.hand_black as i16).min(3) * 5;
         }
 
         // === KINGDOM STRENGTH ===
@@ -1858,12 +1860,16 @@ impl PlayerState {
                 // Nearby red tiles = revolt defense strength
                 let neighbors = pos.neighbors();
                 let nearby_red_count = (neighbors & state.board.red_tiles).count_ones();
-                s += nearby_red_count as i16 * 6;
+                s += nearby_red_count as i16 * 10;  // Increased - revolt defense is crucial
 
                 // Tiles in kingdom = potential scoring and war strength
                 if !visited.get(pos) {
                     let kingdom_map = state.board.find_kingdom_map_fast(pos, connectable);
                     visited |= kingdom_map;
+                    
+                    // Kingdom size bonus - larger kingdoms are more powerful
+                    let kingdom_size = kingdom_map.count_ones();
+                    s += (kingdom_size as i16).min(15) * 2;
                     
                     // Count matching tiles in kingdom (war support + future scoring)
                     let tile_count = match leader {
@@ -1873,12 +1879,12 @@ impl PlayerState {
                         Leader::Black => (kingdom_map & state.board.black_tiles).count_ones(),
                         Leader::None => 0,
                     };
-                    s += tile_count as i16 * 3;
+                    s += tile_count as i16 * 4;  // Increased from 3
 
                     // Check for treasures in kingdom (valuable for green leader)
                     if leader == Leader::Green {
                         let treasure_count = (kingdom_map & state.board.treasures).count_ones();
-                        s += treasure_count as i16 * 15;
+                        s += treasure_count as i16 * 20;  // Increased
                     }
                 }
             }
@@ -1933,6 +1939,26 @@ impl PlayerState {
         if bag_total < 20 {
             // Late game - current scores matter more
             s += min_score * 20; // Extra weight on minimum score in endgame
+        }
+
+        // === MONUMENT CONTROL ===
+        // Monuments generate ongoing points - valuable to control
+        for monument in &state.monuments {
+            let leaders = monument.monument_type.unpack();
+            let monument_pos = monument.pos_top_left;
+            
+            // Find the kingdom this monument is in
+            let monument_kingdom = state.board.find_kingdom_map_fast(monument_pos, connectable);
+            
+            // Check if we have matching leaders in this kingdom
+            for &leader in &leaders {
+                if let Some(leader_pos) = self.get_leader(leader) {
+                    if monument_kingdom.get(leader_pos) {
+                        // We have a matching leader in the monument's kingdom
+                        s += 40;
+                    }
+                }
+            }
         }
 
         s

@@ -10,7 +10,6 @@ use minimax::perft;
 use minimax::Game;
 use minimax::MCTSOptions;
 use minimax::MonteCarloTreeSearch;
-use minimax::Move;
 use minimax::Negamax;
 use minimax::Random;
 use minimax::Strategy;
@@ -33,6 +32,8 @@ fn main() {
     match arg.as_str() {
         #[cfg(feature = "game")]
         "play" => visualizer::play(TnEGame::new()),
+        #[cfg(feature = "game")]
+        "selfplay" => visualizer::play_self_play(TnEGame::new()),
         #[cfg(feature = "game")]
         "view" => {
             let path = std::env::args().nth(2).expect("no path");
@@ -84,8 +85,8 @@ fn test_play() {
         };
         match strategy.choose_move(&mut history.last_mut()) {
             Some(m) => {
-                println!("{:?}: {:?}", curr_player, &m.move_);
-                let ret = history.process(m.move_);
+                println!("{:?}: {:?}", curr_player, &m);
+                let ret = history.process(m);
                 if ret.is_err() {
                     history.save("out.json").unwrap();
                     ret.unwrap();

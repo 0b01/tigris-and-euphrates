@@ -1,14 +1,7 @@
 use crate::{game::{Action, Leader, Player, PlayerAction, TnEGame, H, W, TileType, Pos, RIVER}, pos};
-use minimax::Zobrist;
 use once_cell::sync::Lazy;
 
 pub struct TigrisAndEuphrates;
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TnEMove {
-    pub old_state: TnEGame,
-    pub move_: Action,
-}
 
 // Zobrist hash constants for leader positions
 static LEADER_HASHES: Lazy<[[[u64; 4]; W]; H]> = Lazy::new(|| {
@@ -36,81 +29,51 @@ static PLAYER_TURN_HASH: Lazy<u64> = Lazy::new(|| {
     hasher.finish()
 });
 
-impl Zobrist for TnEGame {
-    fn zobrist_hash(&self) -> u64 {
-        let mut hash: u64 = 0;
-        
-        // Hash based on tile positions using bitboard bits
-        // This is a simplified hash - we extract key bits from the bitboards
-        let red_bits = self.board.red_tiles.0.low_u64();
-        let blue_bits = self.board.blue_tiles.0.low_u64();
-        let green_bits = self.board.green_tiles.0.low_u64();
-        let black_bits = self.board.black_tiles.0.low_u64();
-        
-        hash ^= red_bits.wrapping_mul(0x9e3779b97f4a7c15);
-        hash ^= blue_bits.wrapping_mul(0x85ebca6b);
-        hash ^= green_bits.wrapping_mul(0xc2b2ae35);
-        hash ^= black_bits.wrapping_mul(0x27d4eb2f);
-        
-        // Hash leader positions
-        for (i, leader) in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].iter().enumerate() {
-            if let Some(pos) = self.players.get(Player::Player1).get_leader(*leader) {
-                hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i];
-            }
-            if let Some(pos) = self.players.get(Player::Player2).get_leader(*leader) {
-                hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i].wrapping_add(0xdeadbeef);
-            }
+fn compute_zobrist_hash(state: &TnEGame) -> u64 {
+    let mut hash: u64 = 0;
+    
+    // Hash based on tile positions using bitboard bits
+    // This is a simplified hash - we extract key bits from the bitboards
+    let red_bits = state.board.red_tiles.0.low_u64();
+    let blue_bits = state.board.blue_tiles.0.low_u64();
+    let green_bits = state.board.green_tiles.0.low_u64();
+    let black_bits = state.board.black_tiles.0.low_u64();
+    
+    hash ^= red_bits.wrapping_mul(0x9e3779b97f4a7c15);
+    hash ^= blue_bits.wrapping_mul(0x85ebca6b);
+    hash ^= green_bits.wrapping_mul(0xc2b2ae35);
+    hash ^= black_bits.wrapping_mul(0x27d4eb2f);
+    
+    // Hash leader positions
+    for (i, leader) in [Leader::Red, Leader::Blue, Leader::Green, Leader::Black].iter().enumerate() {
+        if let Some(pos) = state.players.get(Player::Player1).get_leader(*leader) {
+            hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i];
         }
-        
-        // Hash player turn
-        if self.next_player() == Player::Player1 {
-            hash ^= *PLAYER_TURN_HASH;
+        if let Some(pos) = state.players.get(Player::Player2).get_leader(*leader) {
+            hash ^= LEADER_HASHES[pos.x as usize][pos.y as usize][i].wrapping_add(0xdeadbeef);
         }
-        
-        // Hash catastrophes
-        hash ^= self.board.catastrophes.0.low_u64().wrapping_mul(0x1b873593);
-        
-        // Hash monuments
-        hash ^= self.board.monuments.0.low_u64().wrapping_mul(0xe6546b64);
-        
-        hash
     }
+    
+    // Hash player turn
+    if state.next_player() == Player::Player1 {
+        hash ^= *PLAYER_TURN_HASH;
+    }
+    
+    // Hash catastrophes
+    hash ^= state.board.catastrophes.0.low_u64().wrapping_mul(0x1b873593);
+    
+    // Hash monuments
+    hash ^= state.board.monuments.0.low_u64().wrapping_mul(0xe6546b64);
+    
+    hash
 }
 
-impl TnEMove {
-    pub fn new(old_state: TnEGame, action: Action) -> Self {
-        Self {
-            old_state,
-            move_: action,
-        }
-    }
-}
-
-impl minimax::Move for TnEMove {
-    type G = TigrisAndEuphrates;
-
-    fn apply(&self, state: &mut <Self::G as minimax::Game>::S) {
-        match state.process(self.move_) {
-            Ok(_) => {}
-            Err(e) => {
-                dbg!(&state);
-                dbg!(self.move_);
-
-                // dbg!(ret);
-                // visualizer::play(state.clone());
-                panic!("{:#?}", e);
-            }
-        }
-    }
-
-    fn undo(&self, state: &mut <Self::G as minimax::Game>::S) {
-        *state = self.old_state.clone();
-    }
-}
+/// Re-export of the Action type as the move type for external usage
+pub type TnEMove = Action;
 
 impl minimax::Game for TigrisAndEuphrates {
     type S = TnEGame;
-    type M = TnEMove;
+    type M = Action;  // Action is Copy
 
     fn generate_moves(state: &Self::S, moves: &mut Vec<Self::M>) {
         let action = state.next_action();
@@ -127,7 +90,7 @@ impl minimax::Game for TigrisAndEuphrates {
         scored_moves.sort_by(|a, b| b.0.cmp(&a.0));
         
         for (_, a) in scored_moves {
-            moves.push(TnEMove::new(state.clone(), a));
+            moves.push(a);
         }
     }
 
@@ -143,8 +106,39 @@ impl minimax::Game for TigrisAndEuphrates {
         }
     }
 
-    fn is_player1_turn(state: &Self::S) -> bool {
-        state.next_player() == Player::Player1
+    fn apply(state: &mut Self::S, m: Self::M) -> Option<Self::S> {
+        // Clone the state, apply the move to the clone, and return the new state
+        // The minimax library will use this new state and keep the old one for undo
+        let mut new_state = state.clone();
+        match new_state.process(m) {
+            Ok(_) => {
+                // Return the new state - minimax will swap it in
+                Some(new_state)
+            }
+            Err(e) => {
+                // This shouldn't happen if generate_moves is correct
+                eprintln!("Warning: Invalid move {:?} in state {:?}: {:?}", m, state.next_action(), e);
+                // Return None to indicate no change (skip this move)
+                None
+            }
+        }
+    }
+
+    fn undo(_state: &mut Self::S, _m: Self::M) {
+        // Not used when apply returns Some - the library handles state restoration
+    }
+    
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        compute_zobrist_hash(state)
+    }
+
+    fn same_player_continues(state: &Self::S) -> bool {
+        // In T&E, the same player moves again if:
+        // 1. It's still their turn (2 actions per turn)
+        // 2. They have pending conflict resolution
+        // We check by comparing last_action_player with the player whose turn it is
+        state.last_action_player == state.next_player() 
+            && state.last_action_player != Player::None
     }
 }
 
@@ -154,40 +148,76 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
     match action {
         // Wars/conflicts are game-changing - search these first
         Action::WarSelectLeader(_) => 1000,
-        Action::AddSupport(n) => 900 + (*n as i16), // Higher support is often better
+        Action::AddSupport(n) => 900 + (*n as i16),
         
-        // Tile placements that score points are good
-        Action::PlaceTile { pos: _, tile_type } => {
+        // Tile placements - prioritize tiles that will score points
+        Action::PlaceTile { pos, tile_type } => {
             let current_player = state.next_player();
+            let opponent = match current_player {
+                Player::Player1 => Player::Player2,
+                Player::Player2 => Player::Player1,
+                Player::None => Player::None,
+            };
             let player_state = state.players.get(current_player);
+            let opponent_state = state.players.get(opponent);
             let leader = match tile_type {
                 TileType::Red => Leader::Red,
                 TileType::Blue => Leader::Blue,
                 TileType::Green => Leader::Green,
                 TileType::Black => Leader::Black,
-                TileType::Empty => return 100,
+                TileType::Empty => return 50,
             };
             
-            // Check if we have a matching leader that could score
-            if player_state.get_leader(leader).is_some() {
-                // Bonus: tiles that could join to our leader's kingdom are very valuable
-                500
-            } else if tile_type == &TileType::Red {
-                // Red tiles are useful for revolt defense even without a leader
+            let connectable = state.board.connectable_bitboard();
+            let pos_neighbors = pos.neighbors();
+            
+            // Check if opponent would score from this tile
+            let opponent_scores = if let Some(opp_pos) = opponent_state.get_leader(leader) {
+                let opp_kingdom = state.board.find_kingdom_map_fast(opp_pos, connectable);
+                (pos_neighbors & opp_kingdom).count_ones() > 0
+            } else {
+                false
+            };
+            
+            // Check if we have a matching leader on the board
+            if let Some(leader_pos) = player_state.get_leader(leader) {
+                let leader_kingdom = state.board.find_kingdom_map_fast(leader_pos, connectable);
+                
+                // Adjacent to leader's kingdom - this tile will score!
+                if (pos_neighbors & leader_kingdom).count_ones() > 0 {
+                    // We score! But penalize if opponent also scores
+                    if opponent_scores { 600 } else { 850 }
+                } else {
+                    // Tile far from our leader - lower priority
+                    let dist = pos.manhattan_distance(leader_pos);
+                    150 - dist.min(10) as i16
+                }
+            } else if opponent_scores {
+                // We don't have leader but opponent does - avoid!
+                -50
+            } else if *tile_type == TileType::Red {
+                // Red tiles are useful for revolt defense
                 300
             } else {
-                // Other tiles without matching leaders
-                200
+                // No matching leader - lower priority
+                100
             }
         }
         
         // Leader placement - valuable, especially early game
-        Action::PlaceLeader { pos: _, leader } => {
+        Action::PlaceLeader { pos, leader } => {
             let current_player = state.next_player();
             let player_state = state.players.get(current_player);
             
+            if player_state.get_leader(*leader).is_some() {
+                return -100;
+            }
+            
             // Prioritize placing leaders in colors where we're weak
-            let score = match leader {
+            let scores = [player_state.score_red, player_state.score_blue, 
+                          player_state.score_green, player_state.score_black];
+            let min_score = *scores.iter().min().unwrap();
+            let our_score = match leader {
                 Leader::Red => player_state.score_red,
                 Leader::Blue => player_state.score_blue,
                 Leader::Green => player_state.score_green,
@@ -195,32 +225,36 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
                 Leader::None => 0,
             };
             
-            // Lower score = more need for that color = higher priority
-            600 - (score as i16 * 5)
+            // Check revolt defense (nearby red tiles)
+            let neighbors = pos.neighbors();
+            let nearby_red = (neighbors & state.board.red_tiles).count_ones();
+            
+            // Check kingdom size - larger kingdoms have more scoring potential
+            let connectable = state.board.connectable_bitboard();
+            let kingdom = state.board.find_kingdom_map_fast(*pos, connectable);
+            let kingdom_size = kingdom.count_ones().min(20) as i16;
+            
+            // Bonus for weak color leader, good defense, large kingdom
+            let weak_color_bonus = if our_score == min_score { 50 } else { 0 };
+            
+            600 + weak_color_bonus + (nearby_red as i16 * 25) + (kingdom_size * 3)
         }
         
-        // Withdrawing leaders - sometimes necessary but usually not the best move
-        Action::WithdrawLeader(_) => 50,
+        // Withdrawing leaders is usually bad
+        Action::WithdrawLeader(_) => -50,
         
-        // Catastrophes can be very strategic
-        Action::PlaceCatastrophe(_) => 400,
-        
-        // Treasures are valuable
-        Action::TakeTreasure(_) => 800,
-        
-        // Monuments can be very powerful
-        Action::BuildMonument(_) => 700,
-        
-        // Replacing tiles is a minor action
+        // Strategic actions
+        Action::PlaceCatastrophe(_) => 450,
+        Action::TakeTreasure(_) => 850,
+        Action::BuildMonument(_) => 800,
+        Action::DeclineMonument => 30,
         Action::ReplaceTile(_) => 100,
-        
-        // Pass is usually the worst option
-        Action::Pass => 0,
+        Action::Pass => 10,
     }
 }
 
 impl PlayerAction {
-    pub(crate) fn generate_moves(&self, state: &TnEGame) -> Vec<Action> {
+    pub fn generate_moves(&self, state: &TnEGame) -> Vec<Action> {
         let current_player = state.next_player();
         let mut moves = vec![];
 
@@ -235,22 +269,19 @@ impl PlayerAction {
                 // Precompute kingdom count for checking tile placements
                 let kingdom_count = state.board.nearby_kingdom_count();
                 
-                // === MOVE PRUNING ===
-                // Only consider tile placements near existing tiles/kingdoms
+                // Only consider tile placements adjacent to existing tiles
                 // This dramatically reduces the search space
                 let existing_tiles = state.board.connectable_bitboard();
                 let adjacent_to_tiles = existing_tiles.dilate();
-                // Also consider positions 2 steps away for strategic plays
-                let near_tiles = adjacent_to_tiles.dilate();
                 
-                // find all possible tile placements (pruned to near existing tiles)
+                // find all possible tile placements (pruned to adjacent to existing tiles)
                 for x in 0..H {
                     for y in 0..W {
                         let pos = pos!(x, y);
                         
-                        // PRUNING: Skip positions not near any existing tiles
+                        // Skip positions not adjacent to any existing tiles
                         // (unless the board is nearly empty)
-                        if existing_tiles.count_ones() > 5 && !near_tiles.get(pos) {
+                        if existing_tiles.count_ones() > 3 && !adjacent_to_tiles.get(pos) {
                             continue;
                         }
                         
@@ -270,7 +301,6 @@ impl PlayerAction {
                 }
 
                 // move leader - only place leaders we don't already have on board
-                // and prioritize leaders for colors where we're weak
                 let player_state = state.players.get(current_player);
                 let scores = [
                     (Leader::Red, player_state.score_red),
@@ -286,10 +316,10 @@ impl PlayerAction {
                 let leader_spaces_bitboard = state.board.find_empty_leader_space_next_to_red();
                 let leader_spaces: Vec<Pos> = leader_spaces_bitboard.iter().collect();
                 
-                // PRUNING: Limit leader placement options
+                // PRUNING: Limit leader placement options aggressively
                 // - Only place leaders we don't already have on board
-                // - Limit to a reasonable number of positions (best 8)
-                let max_leader_positions = 8.min(leader_spaces.len());
+                // - Limit to 5 positions for faster search
+                let max_leader_positions = 5.min(leader_spaces.len());
                 
                 for (leader, _) in sorted_leaders {
                     // Skip if we already have this leader placed
@@ -310,8 +340,8 @@ impl PlayerAction {
                 // Catastrophe placements - these are rare but strategic
                 if state.players.get(current_player).num_catastrophes > 0 {
                     let catastrophe_positions = state.board.find_catastrophe_positions();
-                    // PRUNING: Limit catastrophe options to 10 most strategic
-                    for pos in catastrophe_positions.iter().take(10) {
+                    // PRUNING: Limit catastrophe options to 5 most strategic
+                    for pos in catastrophe_positions.iter().take(5) {
                         moves.push(Action::PlaceCatastrophe(*pos));
                     }
                 }
@@ -324,22 +354,62 @@ impl PlayerAction {
                 green,
                 black,
             } => {
-                if *red {
-                    moves.push(Action::WarSelectLeader(Leader::Red));
+                // Get the external conflict to check if leaders are still connected
+                let mut any_valid = false;
+                if let Some(conflicts) = &state.external_conflict {
+                    for conflict in &conflicts.conflicts {
+                        // Only generate move if leaders are still connected
+                        if state.board.path_find(conflict.attacker_pos, conflict.defender_pos) {
+                            let leader = conflict.conflict_leader;
+                            match leader {
+                                Leader::Red if *red => {
+                                    moves.push(Action::WarSelectLeader(Leader::Red));
+                                    any_valid = true;
+                                }
+                                Leader::Blue if *blue => {
+                                    moves.push(Action::WarSelectLeader(Leader::Blue));
+                                    any_valid = true;
+                                }
+                                Leader::Green if *green => {
+                                    moves.push(Action::WarSelectLeader(Leader::Green));
+                                    any_valid = true;
+                                }
+                                Leader::Black if *black => {
+                                    moves.push(Action::WarSelectLeader(Leader::Black));
+                                    any_valid = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
-                if *blue {
-                    moves.push(Action::WarSelectLeader(Leader::Blue));
-                }
-                if *green {
-                    moves.push(Action::WarSelectLeader(Leader::Green));
-                }
-                if *black {
-                    moves.push(Action::WarSelectLeader(Leader::Black));
+                
+                // If no valid moves due to disconnection, generate all options 
+                // and let the game handle the invalid ones (they get skipped)
+                if !any_valid {
+                    if *red { moves.push(Action::WarSelectLeader(Leader::Red)); }
+                    if *blue { moves.push(Action::WarSelectLeader(Leader::Blue)); }
+                    if *green { moves.push(Action::WarSelectLeader(Leader::Green)); }
+                    if *black { moves.push(Action::WarSelectLeader(Leader::Black)); }
                 }
             }
             PlayerAction::TakeTreasure(ts) => {
-                moves.push(Action::TakeTreasure(ts[0]));
-                moves.push(Action::TakeTreasure(ts[1]));
+                // Must take border treasures first according to the rules
+                let border_treasures: Vec<_> = ts.iter()
+                    .filter(|t| crate::game::SPECIAL_BORDER_POSITIONS.get(**t))
+                    .collect();
+                
+                if !border_treasures.is_empty() {
+                    // Only generate moves for border treasures
+                    for t in border_treasures {
+                        moves.push(Action::TakeTreasure(*t));
+                    }
+                } else {
+                    // No border treasures, can take any
+                    for t in ts.iter() {
+                        moves.push(Action::TakeTreasure(*t));
+                    }
+                }
             }
             PlayerAction::BuildMonument(_, types) => {
                 for t in types {
@@ -369,10 +439,13 @@ impl minimax::Evaluator for Evaluator {
         let s1 = state.players.get(Player::Player1).get_eval(state);
         let s2 = state.players.get(Player::Player2).get_eval(state);
 
-        if state.last_action_player == Player::Player1 {
-            s2 - s1
-        } else {
+        // Standard negamax expects: positive = good for player to move
+        // Return value from perspective of player to move
+        let next = state.next_player();
+        if next == Player::Player1 {
             s1 - s2
+        } else {
+            s2 - s1
         }
     }
 }
@@ -405,10 +478,12 @@ impl minimax::Evaluator for SimpleEvaluator {
         let s1 = Self::simple_eval(state.players.get(Player::Player1));
         let s2 = Self::simple_eval(state.players.get(Player::Player2));
 
-        if state.last_action_player == Player::Player1 {
-            s2 - s1
-        } else {
+        // Standard negamax: positive = good for player to move
+        let next = state.next_player();
+        if next == Player::Player1 {
             s1 - s2
+        } else {
+            s2 - s1
         }
     }
 }
@@ -416,7 +491,7 @@ impl minimax::Evaluator for SimpleEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minimax::{Negamax, Random, Strategy, Game, Move};
+    use minimax::{Negamax, Random, Strategy, Game};
 
     /// Helper function to play a single game between two strategies
     /// Returns the winner (Player1, Player2, or None for draw)
@@ -438,7 +513,7 @@ mod tests {
 
             match m {
                 Some(mv) => {
-                    mv.apply(&mut game);
+                    TigrisAndEuphrates::apply(&mut game, mv);
                     move_count += 1;
                 }
                 None => break,

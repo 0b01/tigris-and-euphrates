@@ -1,12 +1,12 @@
 use macroquad::{miniquad::conf::Icon, prelude::*};
-use minimax::{Negamax, Strategy, Random};
+use minimax::{Negamax, Strategy};
 
 use crate::game::{
-    Action, Leader, MonumentType, Movement, Player, PlayerAction, Pos, TileType,
+    Action, Leader, MonumentType, Player, PlayerAction, Pos, TileType,
     TnEGame, H, W,
 };
-use crate::solver::TigrisAndEuphrates;
-use crate::{pos, solver::Evaluator};
+use crate::solver::Evaluator;
+use crate::pos;
 
 // the top left corner of the grid
 const LOGICAL_GRID_START_Y: f32 = 8.;
@@ -443,9 +443,12 @@ async fn run_history(history: Vec<TnEGame>) {
 
 async fn run(mut game: TnEGame, self_play: bool) {
     let mut ui = GameUIState::new().await;
-    // Use depth 4 for a challenging AI opponent
+    // Use Negamax with depth 4 for stronger play
     let mut ai_strategy = Negamax::new(Evaluator::default(), 4);
-    // let mut ai_strategy = Random::<TigrisAndEuphrates>::default();
+    
+    // Move counter for limiting self-play games
+    let mut move_count = 0;
+    const MAX_MOVES: usize = 20;
 
     loop {
         let mouse_logical = mouse_position_logical();
@@ -597,9 +600,30 @@ async fn run(mut game: TnEGame, self_play: bool) {
             screenshot("screenshot.png");
         }
 
-        // if the next player is the AI, let it play, could take a while
-        if game.next_player() == Player::Player2 && !self_play {
-            let m = ai_strategy.choose_move(&mut game);
+        // AI plays for Player 2, or both players if self_play mode
+        let should_ai_play = if self_play {
+            // In self_play mode, AI plays for both players
+            true
+        } else {
+            // In normal mode, AI only plays for Player 2
+            game.next_player() == Player::Player2
+        };
+
+        if should_ai_play {
+            // In self-play mode, stop after MAX_MOVES
+            if self_play && move_count >= MAX_MOVES {
+                println!("\n=== Stopped after {} moves ===", MAX_MOVES);
+                // Draw final frame and take screenshot before buffer swap
+                clear_background(LIGHTGRAY);
+                ui.draw(&game);
+                screenshot("after_10_moves.png");
+                next_frame().await;
+                // Wait a moment to ensure file is written
+                next_frame().await;
+                return;
+            }
+            
+            let m = ai_strategy.choose_move(&game);
             if m.is_none() {
                 // take a screenshot
                 screenshot("no_move.png");
@@ -607,7 +631,8 @@ async fn run(mut game: TnEGame, self_play: bool) {
             }
 
             let m = m.unwrap();
-            process(&mut game, m.move_);
+            process(&mut game, m);
+            move_count += 1;
 
             fn calculate_score(game: &mut TnEGame, p: Player) -> (i16, u8) {
                 let player_state = game.players.get(p);
@@ -668,6 +693,14 @@ pub fn history_viewer(games: Vec<TnEGame>) {
 }
 
 pub fn play(game: TnEGame) {
+    play_with_options(game, false);
+}
+
+pub fn play_self_play(game: TnEGame) {
+    play_with_options(game, true);
+}
+
+fn play_with_options(game: TnEGame, self_play: bool) {
     let small = Image::from_file_with_format(include_bytes!("../assets/icon_small.png"), None)
         .bytes
         .leak()
@@ -695,7 +728,7 @@ pub fn play(game: TnEGame) {
             icon: Some(icon),
             ..Default::default()
         },
-        run(game, true),
+        run(game, self_play),
     );
 }
 
