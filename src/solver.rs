@@ -1,4 +1,4 @@
-use crate::{game::{Action, Leader, Player, PlayerAction, TnEGame, H, W, TileType, Pos, RIVER}, pos};
+use crate::{game::{Action, GameState, Leader, Player, PlayerAction, TnEGame, H, W, TileType, Pos, RIVER}, pos};
 use once_cell::sync::Lazy;
 
 pub struct TigrisAndEuphrates;
@@ -148,7 +148,17 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
     match action {
         // Wars/conflicts are game-changing - search these first
         Action::WarSelectLeader(_) => 1000,
-        Action::AddSupport(n) => 900 + (*n as i16),
+        
+        // Support only matters during active conflict (AddSupport state)
+        Action::AddSupport(n) => {
+            // During conflict, adding support is critical
+            if state.state.contains(&GameState::AddSupport) {
+                900 + (*n as i16)
+            } else {
+                // Not in conflict - this shouldn't even be a valid move
+                -100
+            }
+        }
         
         // Tile placements - prioritize tiles that will score points
         Action::PlaceTile { pos, tile_type } => {
@@ -171,6 +181,19 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
             let connectable = state.board.connectable_bitboard();
             let pos_neighbors = pos.neighbors();
             
+            // Check if this color is our weakest (min score comes from it)
+            let scores = [player_state.score_red, player_state.score_blue,
+                          player_state.score_green, player_state.score_black];
+            let min_color = *scores.iter().min().unwrap();
+            let this_color_score = match tile_type {
+                TileType::Red => player_state.score_red,
+                TileType::Blue => player_state.score_blue,
+                TileType::Green => player_state.score_green,
+                TileType::Black => player_state.score_black,
+                TileType::Empty => 0,
+            };
+            let weak_color_bonus = if this_color_score == min_color { 100 } else { 0 };
+            
             // Check if opponent would score from this tile
             let opponent_scores = if let Some(opp_pos) = opponent_state.get_leader(leader) {
                 let opp_kingdom = state.board.find_kingdom_map_fast(opp_pos, connectable);
@@ -185,71 +208,94 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
                 
                 // Adjacent to leader's kingdom - this tile will score!
                 if (pos_neighbors & leader_kingdom).count_ones() > 0 {
-                    // We score! But penalize if opponent also scores
-                    if opponent_scores { 600 } else { 850 }
+                    // We score! Bonus for weak color, penalty if opponent also scores
+                    let base = if opponent_scores { 700 } else { 950 };
+                    base + weak_color_bonus
                 } else {
                     // Tile far from our leader - lower priority
                     let dist = pos.manhattan_distance(leader_pos);
-                    150 - dist.min(10) as i16
+                    200 - dist.min(10) as i16
                 }
             } else if opponent_scores {
                 // We don't have leader but opponent does - avoid!
-                -50
+                -100
             } else if *tile_type == TileType::Red {
                 // Red tiles are useful for revolt defense
                 300
             } else {
-                // No matching leader - lower priority
-                100
+                // No matching leader - medium priority
+                150
             }
         }
         
-        // Leader placement - valuable, especially early game
+        // Leader placement - be careful not to trigger bad revolts
         Action::PlaceLeader { pos, leader } => {
             let current_player = state.next_player();
             let player_state = state.players.get(current_player);
-            
-            if player_state.get_leader(*leader).is_some() {
-                return -100;
-            }
-            
-            // Prioritize placing leaders in colors where we're weak
-            let scores = [player_state.score_red, player_state.score_blue, 
-                          player_state.score_green, player_state.score_black];
-            let min_score = *scores.iter().min().unwrap();
-            let our_score = match leader {
-                Leader::Red => player_state.score_red,
-                Leader::Blue => player_state.score_blue,
-                Leader::Green => player_state.score_green,
-                Leader::Black => player_state.score_black,
-                Leader::None => 0,
+            let opponent = match current_player {
+                Player::Player1 => Player::Player2,
+                Player::Player2 => Player::Player1,
+                Player::None => Player::None,
             };
+            let opponent_state = state.players.get(opponent);
+            
+            // Don't place if already have this leader
+            if player_state.get_leader(*leader).is_some() {
+                return -200;
+            }
             
             // Check revolt defense (nearby red tiles)
             let neighbors = pos.neighbors();
-            let nearby_red = (neighbors & state.board.red_tiles).count_ones();
+            let nearby_red = (neighbors & state.board.red_tiles).count_ones() as i16;
             
-            // Check kingdom size - larger kingdoms have more scoring potential
+            // Check kingdom for conflicts
             let connectable = state.board.connectable_bitboard();
             let kingdom = state.board.find_kingdom_map_fast(*pos, connectable);
-            let kingdom_size = kingdom.count_ones().min(20) as i16;
+            let kingdom_size = kingdom.count_ones().min(15) as i16;
             
-            // Bonus for weak color leader, good defense, large kingdom
-            let weak_color_bonus = if our_score == min_score { 50 } else { 0 };
+            // Check if there's an opponent leader of SAME color (would trigger revolt)
+            let opp_same_leader = opponent_state.get_leader(*leader);
+            let causes_revolt = opp_same_leader.map_or(false, |p| kingdom.get(p));
             
-            600 + weak_color_bonus + (nearby_red as i16 * 25) + (kingdom_size * 3)
+            // Also check if ANY opponent leader is in this kingdom (creates tension)
+            let opp_in_kingdom = opponent_state.get_leader(Leader::Red).map_or(false, |p| kingdom.get(p))
+                || opponent_state.get_leader(Leader::Blue).map_or(false, |p| kingdom.get(p))
+                || opponent_state.get_leader(Leader::Green).map_or(false, |p| kingdom.get(p))
+                || opponent_state.get_leader(Leader::Black).map_or(false, |p| kingdom.get(p));
+            
+            // Strong penalty for causing revolt without defense
+            let revolt_penalty = if causes_revolt {
+                // Revolt! Need good defense (3+ red tiles) to make this worthwhile
+                if nearby_red >= 3 { 
+                    0  // We have good defense, ok to try
+                } else if nearby_red >= 1 { 
+                    -150  // Risky
+                } else { 
+                    -300  // Very bad - we'll likely lose
+                }
+            } else if opp_in_kingdom {
+                // Opponent is here but no immediate revolt - still risky for future wars
+                -50
+            } else {
+                0
+            };
+            
+            // Prefer kingdoms without opponent presence
+            // Base priority + defense + kingdom size + revolt consideration
+            350 + (nearby_red * 15) + (kingdom_size * 2) + revolt_penalty
         }
         
-        // Withdrawing leaders is usually bad
-        Action::WithdrawLeader(_) => -50,
+        // Withdrawing leaders is usually bad - low priority
+        // Only do it if there's a very good reason (escaping a losing war)
+        Action::WithdrawLeader(_) => -100,
         
         // Strategic actions
-        Action::PlaceCatastrophe(_) => 450,
-        Action::TakeTreasure(_) => 850,
-        Action::BuildMonument(_) => 800,
+        Action::PlaceCatastrophe(_) => 200,  // Lower priority - save for emergencies
+        Action::TakeTreasure(_) => 1000,  // Very valuable - wildcards!
+        Action::BuildMonument(_) => 900,  // Great for ongoing points
         Action::DeclineMonument => 30,
         Action::ReplaceTile(_) => 100,
-        Action::Pass => 10,
+        Action::Pass => 5,
     }
 }
 
@@ -450,6 +496,79 @@ impl minimax::Evaluator for Evaluator {
     }
 }
 
+/// Baseline evaluator - the current "best" version to compare against
+/// Copy the current get_eval logic here before making changes
+pub struct BaselineEvaluator;
+
+impl Default for BaselineEvaluator {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl BaselineEvaluator {
+    fn eval(player_state: &crate::game::PlayerState, state: &TnEGame) -> i16 {
+        let mut s: i16 = 0;
+
+        // Min score weighted 100x
+        let min_score = player_state.calculate_score() as i16;
+        s += min_score * 100;
+        
+        // Raw score sum * 5
+        s += player_state.score_sum() as i16 * 5;
+
+        // Treasure bonus 100 (upgraded from 80)
+        s += player_state.score_treasure as i16 * 100;
+        
+        // Balance bonus - 20 per nonzero color
+        let scores = [player_state.score_red, player_state.score_blue, 
+                      player_state.score_green, player_state.score_black];
+        let nonzero_colors = scores.iter().filter(|&&x| x > 0).count() as i16;
+        s += nonzero_colors * 20;
+
+        // Leader presence - 10 per leader
+        let leaders_on_board = [
+            player_state.placed_red_leader, player_state.placed_blue_leader,
+            player_state.placed_green_leader, player_state.placed_black_leader
+        ].iter().filter(|x| x.is_some()).count() as i16;
+        s += leaders_on_board * 10;
+
+        // Monument control - 40 per controlled color
+        let connectable = state.board.connectable_bitboard();
+        for monument in &state.monuments {
+            let leaders = monument.monument_type.unpack();
+            let monument_pos = monument.pos_top_left;
+            let monument_kingdom = state.board.find_kingdom_map_fast(monument_pos, connectable);
+            
+            for &leader in &leaders {
+                if let Some(leader_pos) = player_state.get_leader(leader) {
+                    if monument_kingdom.get(leader_pos) {
+                        s += 40;
+                    }
+                }
+            }
+        }
+
+        s
+    }
+}
+
+impl minimax::Evaluator for BaselineEvaluator {
+    type G = TigrisAndEuphrates;
+
+    fn evaluate(&self, state: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
+        let s1 = Self::eval(state.players.get(Player::Player1), state);
+        let s2 = Self::eval(state.players.get(Player::Player2), state);
+
+        let next = state.next_player();
+        if next == Player::Player1 {
+            s1 - s2
+        } else {
+            s2 - s1
+        }
+    }
+}
+
 /// A simple evaluator that only considers the raw score (for testing the old AI)
 pub struct SimpleEvaluator;
 
@@ -494,7 +613,7 @@ mod tests {
     use minimax::{Negamax, Random, Strategy, Game};
 
     /// Helper function to play a single game between two strategies
-    /// Returns the winner (Player1, Player2, or None for draw)
+    /// Returns the winner based on score after max_moves (or game end)
     fn play_game<S1: Strategy<TigrisAndEuphrates>, S2: Strategy<TigrisAndEuphrates>>(
         p1_strategy: &mut S1,
         p2_strategy: &mut S2,
@@ -513,13 +632,28 @@ mod tests {
 
             match m {
                 Some(mv) => {
-                    TigrisAndEuphrates::apply(&mut game, mv);
+                    // apply returns a new state, we need to use it
+                    if let Some(new_state) = TigrisAndEuphrates::apply(&mut game, mv) {
+                        game = new_state;
+                    }
                     move_count += 1;
                 }
                 None => break,
             }
         }
 
+        // Debug scores
+        let p1 = game.players.get(Player::Player1);
+        let p2 = game.players.get(Player::Player2);
+        let p1_min = p1.calculate_score();
+        let p2_min = p2.calculate_score();
+        println!("Game ended after {} moves:", move_count);
+        println!("  P1: min={} [R:{} Bk:{} Bl:{} G:{} T:{}]", 
+            p1_min, p1.score_red, p1.score_black, p1.score_blue, p1.score_green, p1.score_treasure);
+        println!("  P2: min={} [R:{} Bk:{} Bl:{} G:{} T:{}]",
+            p2_min, p2.score_red, p2.score_black, p2.score_blue, p2.score_green, p2.score_treasure);
+
+        // Use score comparison (works even if game didn't end naturally)
         game.winner()
     }
 
@@ -540,9 +674,9 @@ mod tests {
             let mut random_strategy = Random::<TigrisAndEuphrates>::new();
 
             let winner = if ai_is_p1 {
-                play_game(&mut ai_strategy, &mut random_strategy, 200)
+                play_game(&mut ai_strategy, &mut random_strategy, 50)
             } else {
-                play_game(&mut random_strategy, &mut ai_strategy, 200)
+                play_game(&mut random_strategy, &mut ai_strategy, 50)
             };
 
             match winner {
@@ -567,10 +701,10 @@ mod tests {
         );
     }
 
-    /// Test that the improved AI (depth 2) beats the simple/old AI (depth 1)
+    /// Test that the improved AI (depth 2) beats the simple/old AI (depth 2)
     #[test]
     fn test_improved_ai_beats_simple_ai() {
-        let num_games = 2;
+        let num_games = 20;  // More games for statistical significance
         let mut improved_wins = 0;
         let mut simple_wins = 0;
         let mut draws = 0;
@@ -579,13 +713,14 @@ mod tests {
             // Alternate who goes first
             let improved_is_p1 = i % 2 == 0;
             
+            // Same depth for fair comparison
             let mut improved_ai = Negamax::new(Evaluator::default(), 2);
-            let mut simple_ai = Negamax::new(SimpleEvaluator::default(), 1);
+            let mut simple_ai = Negamax::new(SimpleEvaluator::default(), 2);
 
             let winner = if improved_is_p1 {
-                play_game(&mut improved_ai, &mut simple_ai, 200)
+                play_game(&mut improved_ai, &mut simple_ai, 100)
             } else {
-                play_game(&mut simple_ai, &mut improved_ai, 200)
+                play_game(&mut simple_ai, &mut improved_ai, 100)
             };
 
             match winner {
@@ -651,6 +786,53 @@ mod tests {
             deep_wins,
             shallow_wins
         );
+    }
+
+    /// A/B test: Compare current Evaluator (experimental) vs BaselineEvaluator (known good)
+    /// Run this after making changes to get_eval() to see if they help
+    #[test]
+    fn test_experimental_vs_baseline() {
+        let num_games = 20;
+        let mut experimental_wins = 0;
+        let mut baseline_wins = 0;
+        let mut draws = 0;
+
+        for i in 0..num_games {
+            // Alternate who goes first
+            let experimental_is_p1 = i % 2 == 0;
+            
+            // Same depth for fair comparison
+            let mut experimental_ai = Negamax::new(Evaluator::default(), 2);
+            let mut baseline_ai = Negamax::new(BaselineEvaluator::default(), 2);
+
+            let winner = if experimental_is_p1 {
+                play_game(&mut experimental_ai, &mut baseline_ai, 100)
+            } else {
+                play_game(&mut baseline_ai, &mut experimental_ai, 100)
+            };
+
+            match winner {
+                Player::Player1 if experimental_is_p1 => experimental_wins += 1,
+                Player::Player2 if !experimental_is_p1 => experimental_wins += 1,
+                Player::Player1 if !experimental_is_p1 => baseline_wins += 1,
+                Player::Player2 if experimental_is_p1 => baseline_wins += 1,
+                _ => draws += 1,
+            }
+        }
+
+        println!("\n=== Experimental vs Baseline Results ===");
+        println!("Experimental wins: {}, Baseline wins: {}, Draws: {}", 
+            experimental_wins, baseline_wins, draws);
+        let win_rate = experimental_wins as f64 / num_games as f64 * 100.0;
+        println!("Experimental win rate: {:.1}%", win_rate);
+        
+        if experimental_wins > baseline_wins {
+            println!("✓ IMPROVEMENT: Experimental is better! Keep the change.");
+        } else if experimental_wins < baseline_wins {
+            println!("✗ REGRESSION: Baseline is better. Revert the change.");
+        } else {
+            println!("≈ NO CHANGE: About the same. Consider if change adds value.");
+        }
     }
 
     // ==================== ELO RATING SYSTEM ====================

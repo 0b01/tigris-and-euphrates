@@ -448,7 +448,7 @@ async fn run(mut game: TnEGame, self_play: bool) {
     
     // Move counter for limiting self-play games
     let mut move_count = 0;
-    const MAX_MOVES: usize = 20;
+    const MAX_MOVES: usize = 50;
 
     loop {
         let mouse_logical = mouse_position_logical();
@@ -612,7 +612,23 @@ async fn run(mut game: TnEGame, self_play: bool) {
         if should_ai_play {
             // In self-play mode, stop after MAX_MOVES
             if self_play && move_count >= MAX_MOVES {
-                println!("\n=== Stopped after {} moves ===", MAX_MOVES);
+                // Final summary
+                let p1 = game.players.get(Player::Player1);
+                let p2 = game.players.get(Player::Player2);
+                println!("\n============================================================");
+                println!("=== GAME SUMMARY after {} moves ===", MAX_MOVES);
+                println!("P1 Final: min={} [R:{} Bk:{} Bl:{} G:{} T:{}]",
+                    p1.calculate_score(), p1.score_red, p1.score_black, 
+                    p1.score_blue, p1.score_green, p1.score_treasure);
+                println!("P2 Final: min={} [R:{} Bk:{} Bl:{} G:{} T:{}]",
+                    p2.calculate_score(), p2.score_red, p2.score_black,
+                    p2.score_blue, p2.score_green, p2.score_treasure);
+                let winner = if p1.calculate_score() > p2.calculate_score() { "P1" }
+                    else if p2.calculate_score() > p1.calculate_score() { "P2" }
+                    else { "TIE" };
+                println!("Winner: {}", winner);
+                println!("============================================================");
+                
                 // Draw final frame and take screenshot before buffer swap
                 clear_background(LIGHTGRAY);
                 ui.draw(&game);
@@ -631,6 +647,7 @@ async fn run(mut game: TnEGame, self_play: bool) {
             }
 
             let m = m.unwrap();
+            print!("[{}] ", move_count + 1);  // Move number
             process(&mut game, m);
             move_count += 1;
 
@@ -641,16 +658,24 @@ async fn run(mut game: TnEGame, self_play: bool) {
 
             let (e1, s1) = calculate_score(&mut game, Player::Player1);
             let (e2, s2) = calculate_score(&mut game, Player::Player2);
-            let player_state = game.players.get_mut(Player::Player1);
-            print!("\t[Score: {} - {}]", s1, s2);
-            print!(
-                "[r({}) - black({}) - blue({}) - g({})]",
-                player_state.score_red,
-                player_state.score_black,
-                player_state.score_blue,
-                player_state.score_green
-            );
-            println!("[Eval: {} - {}]", e1, e2);
+            let p1 = game.players.get(Player::Player1);
+            let p2 = game.players.get(Player::Player2);
+            
+            // Count leaders on board for each player
+            let p1_leaders = [p1.placed_red_leader, p1.placed_blue_leader, 
+                              p1.placed_green_leader, p1.placed_black_leader]
+                .iter().filter(|x| x.is_some()).count();
+            let p2_leaders = [p2.placed_red_leader, p2.placed_blue_leader,
+                              p2.placed_green_leader, p2.placed_black_leader]
+                .iter().filter(|x| x.is_some()).count();
+            
+            println!();
+            println!("  P1: min={} [R:{} Bk:{} Bl:{} G:{} T:{}] leaders={} eval={}",
+                s1, p1.score_red, p1.score_black, p1.score_blue, p1.score_green, 
+                p1.score_treasure, p1_leaders, e1);
+            println!("  P2: min={} [R:{} Bk:{} Bl:{} G:{} T:{}] leaders={} eval={}",
+                s2, p2.score_red, p2.score_black, p2.score_blue, p2.score_green,
+                p2.score_treasure, p2_leaders, e2);
         }
 
         if game.state.is_empty() {
@@ -735,7 +760,8 @@ fn play_with_options(game: TnEGame, self_play: bool) {
 fn process(game: &mut TnEGame, action: Action) {
     let ret = game.process(action);
     if let Ok(_) = ret {
-        println!("{:?}: {:?}", game.last_action_player, &action);
+        // Simple move log
+        print!("{:?}: {:?}", game.last_action_player, &action);
     } else {
         dbg!(ret.unwrap_err());
     }
