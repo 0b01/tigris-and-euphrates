@@ -1,11 +1,11 @@
 use macroquad::{miniquad::conf::Icon, prelude::*};
-use minimax::{Negamax, Strategy, MonteCarloTreeSearch, MCTSOptions};
+use minimax::{Negamax, Strategy};
 
 use crate::game::{
     Action, Leader, MonumentType, Player, PlayerAction, Pos, TileType,
     TnEGame, H, W,
 };
-use crate::solver::{TigrisAndEuphrates, Evaluator};
+use crate::solver::Evaluator;
 use crate::pos;
 
 // the top left corner of the grid
@@ -443,14 +443,12 @@ async fn run_history(history: Vec<TnEGame>) {
 
 async fn run(mut game: TnEGame, self_play: bool) {
     let mut ui = GameUIState::new().await;
-    // Use Negamax for reliable AI, or MCTS for experimentation
-    let mut ai_strategy = Negamax::new(Evaluator::default(), 5);
-    // MCTS alternative (needs more debugging):
-    // let mcts_options = MCTSOptions::default()
-    //     .with_max_rollout_depth(50)
-    //     .with_num_threads(4);
-    // let mut ai_strategy = MonteCarloTreeSearch::<TigrisAndEuphrates>::new(mcts_options);
-    // ai_strategy.set_timeout(std::time::Duration::from_secs(2));
+    // Use Negamax with depth 4 for stronger play
+    let mut ai_strategy = Negamax::new(Evaluator::default(), 4);
+    
+    // Move counter for limiting self-play games
+    let mut move_count = 0;
+    const MAX_MOVES: usize = 20;
 
     loop {
         let mouse_logical = mouse_position_logical();
@@ -612,6 +610,19 @@ async fn run(mut game: TnEGame, self_play: bool) {
         };
 
         if should_ai_play {
+            // In self-play mode, stop after MAX_MOVES
+            if self_play && move_count >= MAX_MOVES {
+                println!("\n=== Stopped after {} moves ===", MAX_MOVES);
+                // Draw final frame and take screenshot before buffer swap
+                clear_background(LIGHTGRAY);
+                ui.draw(&game);
+                screenshot("after_10_moves.png");
+                next_frame().await;
+                // Wait a moment to ensure file is written
+                next_frame().await;
+                return;
+            }
+            
             let m = ai_strategy.choose_move(&game);
             if m.is_none() {
                 // take a screenshot
@@ -621,6 +632,7 @@ async fn run(mut game: TnEGame, self_play: bool) {
 
             let m = m.unwrap();
             process(&mut game, m);
+            move_count += 1;
 
             fn calculate_score(game: &mut TnEGame, p: Player) -> (i16, u8) {
                 let player_state = game.players.get(p);

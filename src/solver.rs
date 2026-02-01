@@ -148,9 +148,9 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
     match action {
         // Wars/conflicts are game-changing - search these first
         Action::WarSelectLeader(_) => 1000,
-        Action::AddSupport(n) => 900 + (*n as i16), // Higher support is often better
+        Action::AddSupport(n) => 900 + (*n as i16),
         
-        // Tile placements - prioritize tiles that will SCORE POINTS
+        // Tile placements - prioritize tiles that will score points
         Action::PlaceTile { pos, tile_type } => {
             let current_player = state.next_player();
             let opponent = match current_player {
@@ -171,43 +171,35 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
             let connectable = state.board.connectable_bitboard();
             let pos_neighbors = pos.neighbors();
             
-            // Check if OPPONENT has a matching leader that would score from this tile
-            let opponent_would_score = if let Some(opp_leader_pos) = opponent_state.get_leader(leader) {
-                let opp_kingdom = state.board.find_kingdom_map_fast(opp_leader_pos, connectable);
+            // Check if opponent would score from this tile
+            let opponent_scores = if let Some(opp_pos) = opponent_state.get_leader(leader) {
+                let opp_kingdom = state.board.find_kingdom_map_fast(opp_pos, connectable);
                 (pos_neighbors & opp_kingdom).count_ones() > 0
             } else {
                 false
             };
             
-            // If this tile would score for opponent but not for us, it's terrible!
-            if opponent_would_score && player_state.get_leader(leader).is_none() {
-                return -100;  // Very bad - scores for opponent, not us
-            }
-            
             // Check if we have a matching leader on the board
             if let Some(leader_pos) = player_state.get_leader(leader) {
-                // Check if this tile would be in the same kingdom as our leader
                 let leader_kingdom = state.board.find_kingdom_map_fast(leader_pos, connectable);
                 
-                // Check if pos is adjacent to the kingdom (would connect)
-                if leader_kingdom.get(*pos) {
-                    // Already in kingdom (shouldn't happen for new tile, but check)
-                    700
-                } else if (pos_neighbors & leader_kingdom).count_ones() > 0 {
-                    // Adjacent to leader's kingdom - THIS TILE WILL SCORE!
-                    800
+                // Adjacent to leader's kingdom - this tile will score!
+                if (pos_neighbors & leader_kingdom).count_ones() > 0 {
+                    // We score! But penalize if opponent also scores
+                    if opponent_scores { 600 } else { 850 }
                 } else {
-                    // We have the leader but tile wouldn't connect - still might be useful
-                    // for expanding toward the leader later
+                    // Tile far from our leader - lower priority
                     let dist = pos.manhattan_distance(leader_pos);
-                    200 - dist.min(10) as i16
+                    150 - dist.min(10) as i16
                 }
-            } else if tile_type == &TileType::Red {
-                // Red tiles are useful for revolt defense even without a leader
+            } else if opponent_scores {
+                // We don't have leader but opponent does - avoid!
+                -50
+            } else if *tile_type == TileType::Red {
+                // Red tiles are useful for revolt defense
                 300
             } else {
-                // No matching leader - this tile won't score for us
-                // Very low priority unless it's setting up for later
+                // No matching leader - lower priority
                 100
             }
         }
@@ -217,13 +209,15 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
             let current_player = state.next_player();
             let player_state = state.players.get(current_player);
             
-            // Don't place if leader is already on board (shouldn't happen, but safety)
             if player_state.get_leader(*leader).is_some() {
                 return -100;
             }
             
             // Prioritize placing leaders in colors where we're weak
-            let score = match leader {
+            let scores = [player_state.score_red, player_state.score_blue, 
+                          player_state.score_green, player_state.score_black];
+            let min_score = *scores.iter().min().unwrap();
+            let our_score = match leader {
                 Leader::Red => player_state.score_red,
                 Leader::Blue => player_state.score_blue,
                 Leader::Green => player_state.score_green,
@@ -231,35 +225,30 @@ fn score_move(state: &TnEGame, action: &Action) -> i16 {
                 Leader::None => 0,
             };
             
-            // Check if position has nearby red tiles (revolt defense)
+            // Check revolt defense (nearby red tiles)
             let neighbors = pos.neighbors();
             let nearby_red = (neighbors & state.board.red_tiles).count_ones();
             
-            // Lower score = more need for that color = higher priority
-            // Bonus for positions with good revolt defense
-            650 - (score as i16 * 5) + (nearby_red as i16 * 20)
+            // Check kingdom size - larger kingdoms have more scoring potential
+            let connectable = state.board.connectable_bitboard();
+            let kingdom = state.board.find_kingdom_map_fast(*pos, connectable);
+            let kingdom_size = kingdom.count_ones().min(20) as i16;
+            
+            // Bonus for weak color leader, good defense, large kingdom
+            let weak_color_bonus = if our_score == min_score { 50 } else { 0 };
+            
+            600 + weak_color_bonus + (nearby_red as i16 * 25) + (kingdom_size * 3)
         }
         
-        // Withdrawing leaders - RARELY good. Strong negative priority.
-        // Only search these last since they usually waste actions.
+        // Withdrawing leaders is usually bad
         Action::WithdrawLeader(_) => -50,
         
-        // Catastrophes can be very strategic
+        // Strategic actions
         Action::PlaceCatastrophe(_) => 450,
-        
-        // Treasures are valuable
-        Action::TakeTreasure(_) => 800,
-        
-        // Monuments can be very powerful
-        Action::BuildMonument(_) => 750,
-        
-        // Declining a monument is usually suboptimal but valid
+        Action::TakeTreasure(_) => 850,
+        Action::BuildMonument(_) => 800,
         Action::DeclineMonument => 30,
-        
-        // Replacing tiles is a minor action
         Action::ReplaceTile(_) => 100,
-        
-        // Pass is usually the worst option (but better than wasting moves)
         Action::Pass => 10,
     }
 }
@@ -280,22 +269,17 @@ impl PlayerAction {
                 // Precompute kingdom count for checking tile placements
                 let kingdom_count = state.board.nearby_kingdom_count();
                 
-                // === AGGRESSIVE MOVE PRUNING ===
                 // Only consider tile placements adjacent to existing tiles
                 // This dramatically reduces the search space
                 let existing_tiles = state.board.connectable_bitboard();
                 let adjacent_to_tiles = existing_tiles.dilate();
-                
-                // Get player's leader positions for scoring priority
-                let player_state = state.players.get(current_player);
-                let connectable = state.board.connectable_bitboard();
                 
                 // find all possible tile placements (pruned to adjacent to existing tiles)
                 for x in 0..H {
                     for y in 0..W {
                         let pos = pos!(x, y);
                         
-                        // PRUNING: Skip positions not adjacent to any existing tiles
+                        // Skip positions not adjacent to any existing tiles
                         // (unless the board is nearly empty)
                         if existing_tiles.count_ones() > 3 && !adjacent_to_tiles.get(pos) {
                             continue;
@@ -317,7 +301,6 @@ impl PlayerAction {
                 }
 
                 // move leader - only place leaders we don't already have on board
-                // and prioritize leaders for colors where we're weak
                 let player_state = state.players.get(current_player);
                 let scores = [
                     (Leader::Red, player_state.score_red),
@@ -508,7 +491,7 @@ impl minimax::Evaluator for SimpleEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minimax::{Negamax, Random, Strategy, Game, Move};
+    use minimax::{Negamax, Random, Strategy, Game};
 
     /// Helper function to play a single game between two strategies
     /// Returns the winner (Player1, Player2, or None for draw)

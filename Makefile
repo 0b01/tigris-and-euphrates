@@ -1,5 +1,7 @@
 default:
-	cargo run --release --features game -- play 
+	cargo run --release --features game -- selfplay
+play:
+	cargo run --release --features game -- play
 flame:
 	cargo flamegraph --root -- test && open flamegraph.svg
 perft:

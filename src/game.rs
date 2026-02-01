@@ -1941,6 +1941,26 @@ impl PlayerState {
             s += min_score * 20; // Extra weight on minimum score in endgame
         }
 
+        // === MONUMENT CONTROL ===
+        // Monuments generate ongoing points - valuable to control
+        for monument in &state.monuments {
+            let leaders = monument.monument_type.unpack();
+            let monument_pos = monument.pos_top_left;
+            
+            // Find the kingdom this monument is in
+            let monument_kingdom = state.board.find_kingdom_map_fast(monument_pos, connectable);
+            
+            // Check if we have matching leaders in this kingdom
+            for &leader in &leaders {
+                if let Some(leader_pos) = self.get_leader(leader) {
+                    if monument_kingdom.get(leader_pos) {
+                        // We have a matching leader in the monument's kingdom
+                        s += 40;
+                    }
+                }
+            }
+        }
+
         s
     }
 
