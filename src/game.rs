@@ -1779,52 +1779,6 @@ impl PlayerState {
         self.score_black + self.score_red + self.score_green + self.score_blue
     }
 
-    pub fn get_eval(&self, state: &TnEGame) -> i16 {
-        // Use BaselineEvaluator logic directly to keep them in sync
-        // When experimenting, modify THIS function, then test against BaselineEvaluator
-        let mut s: i16 = 0;
-
-        // Min score weighted 100x (120 was mixed)
-        let min_score = self.calculate_score() as i16;
-        s += min_score * 100;
-        
-        // EXPERIMENT: Raw score sum * 8 (was 5)
-        s += self.score_sum() as i16 * 8;
-
-        // Treasure bonus 100 (upgraded from 80) - CONFIRMED IMPROVEMENT
-        s += self.score_treasure as i16 * 100;
-        
-        // Balance bonus - 20 per nonzero color (30 didn't help)
-        let scores = [self.score_red, self.score_blue, self.score_green, self.score_black];
-        let nonzero_colors = scores.iter().filter(|&&x| x > 0).count() as i16;
-        s += nonzero_colors * 20;
-
-        // Leader presence - 10 per leader
-        let leaders_on_board = [
-            self.placed_red_leader, self.placed_blue_leader,
-            self.placed_green_leader, self.placed_black_leader
-        ].iter().filter(|x| x.is_some()).count() as i16;
-        s += leaders_on_board * 10;
-
-        // Monument control - 40 per controlled color (60 was worse)
-        let connectable = state.board.connectable_bitboard();
-        for monument in &state.monuments {
-            let leaders = monument.monument_type.unpack();
-            let monument_pos = monument.pos_top_left;
-            let monument_kingdom = state.board.find_kingdom_map_fast(monument_pos, connectable);
-            
-            for &leader in &leaders {
-                if let Some(leader_pos) = self.get_leader(leader) {
-                    if monument_kingdom.get(leader_pos) {
-                        s += 40;
-                    }
-                }
-            }
-        }
-
-        s
-    }
-
     pub(crate) fn hand_to_vec(&self) -> Vec<TileType> {
         let mut ret = Vec::new();
         for _ in 0..self.hand_black {

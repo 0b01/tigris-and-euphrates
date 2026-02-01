@@ -651,13 +651,13 @@ async fn run(mut game: TnEGame, self_play: bool) {
             process(&mut game, m);
             move_count += 1;
 
-            fn calculate_score(game: &mut TnEGame, p: Player) -> (i16, u8) {
+            fn calculate_score(game: &TnEGame, p: Player) -> (i16, u8) {
                 let player_state = game.players.get(p);
-                (player_state.get_eval(game), player_state.calculate_score())
+                (crate::solver::Evaluator::eval_player(player_state, game), player_state.calculate_score())
             }
 
-            let (e1, s1) = calculate_score(&mut game, Player::Player1);
-            let (e2, s2) = calculate_score(&mut game, Player::Player2);
+            let (e1, s1) = calculate_score(&game, Player::Player1);
+            let (e2, s2) = calculate_score(&game, Player::Player2);
             let p1 = game.players.get(Player::Player1);
             let p2 = game.players.get(Player::Player2);
             
