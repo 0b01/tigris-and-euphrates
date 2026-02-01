@@ -3,7 +3,9 @@ use numpy::{IntoPyArray, PyArray3, PyArray1};
 use pyo3::types::PyTuple;
 use pyo3::{pymodule, types::PyModule, PyResult, Python};
 use crate::game::{TnEGame, Action, Pos, W, H, Movement, Leader, TileType, Player, Monument, RIVER, Bitboard, MonumentType, GameState};
+use crate::solver::Evaluator;
 use crate::pos;
+use minimax::{Negamax, Strategy};
 
 use pyo3::prelude::*;
 
@@ -250,6 +252,99 @@ impl TnEGame {
             reward,
             (flip as u8 as f32),
         ]);
+    }
+
+    /// Get the AI's recommended move as an action index
+    #[pyo3(name="get_ai_move")]
+    fn get_ai_move(&self, depth: usize) -> Option<usize> {
+        let mut strategy = Negamax::new(Evaluator::default(), depth as u8);
+        strategy.choose_move(&self).map(|m: Action| m.into())
+    }
+
+    /// Get human-readable game state for BGA parsing
+    #[pyo3(name="get_board_state")]
+    fn get_board_state(&self) -> String {
+        let mut result = String::new();
+        
+        // Board tiles and leaders
+        result.push_str("BOARD:\n");
+        for y in 0..H {
+            for x in 0..W {
+                let pos = pos!(x as u8, y as u8);
+                let c = if self.board.get_catastrophe(pos) {
+                    'X'
+                } else if self.board.get_leader(pos) != Leader::None {
+                    let p = self.board.get_player(pos);
+                    let l = self.board.get_leader(pos);
+                    match (p, l) {
+                        (Player::Player1, Leader::Red) => '1',
+                        (Player::Player1, Leader::Green) => '2',
+                        (Player::Player1, Leader::Blue) => '3',
+                        (Player::Player1, Leader::Black) => '4',
+                        (Player::Player2, Leader::Red) => '5',
+                        (Player::Player2, Leader::Green) => '6',
+                        (Player::Player2, Leader::Blue) => '7',
+                        (Player::Player2, Leader::Black) => '8',
+                        _ => '?',
+                    }
+                } else {
+                    match self.board.get_tile_type(pos) {
+                        TileType::Red => 'r',
+                        TileType::Green => 'g',
+                        TileType::Blue => 'b',
+                        TileType::Black => 'k',
+                        TileType::Empty => if RIVER.get(pos) { '~' } else { '.' },
+                    }
+                };
+                result.push(c);
+            }
+            result.push('\n');
+        }
+        
+        // Player scores
+        let p1 = self.players.get(Player::Player1);
+        let p2 = self.players.get(Player::Player2);
+        result.push_str(&format!("P1: r={} g={} b={} k={} t={}\n", 
+            p1.score_red, p1.score_green, p1.score_blue, p1.score_black, p1.score_treasure));
+        result.push_str(&format!("P2: r={} g={} b={} k={} t={}\n",
+            p2.score_red, p2.score_green, p2.score_blue, p2.score_black, p2.score_treasure));
+        
+        // Current player and state
+        result.push_str(&format!("TURN: {:?}\n", self.next_player()));
+        if let Some(state) = self.state.last() {
+            result.push_str(&format!("STATE: {:?}\n", state));
+        }
+        
+        result
+    }
+
+    /// Get all legal moves as (action_index, description) pairs
+    #[pyo3(name="get_legal_moves")]
+    fn get_legal_moves(&self) -> Vec<(usize, String)> {
+        self.next_action().generate_moves(self)
+            .into_iter()
+            .map(|m| {
+                let idx: usize = m.into();
+                let desc = format!("{:?}", m);
+                (idx, desc)
+            })
+            .collect()
+    }
+
+    /// Check if game is over
+    #[pyo3(name="is_game_over")]
+    fn is_game_over(&self) -> bool {
+        self.state.is_empty()
+    }
+
+    /// Get current player (1 or 2)
+    #[pyo3(name="current_player")]
+    fn current_player(&self) -> u8 {
+        match self.next_player() {
+            Player::Player1 => 1,
+            Player::Player2 => 2,
+            _ => 0,
+        }
     }
 }
 
