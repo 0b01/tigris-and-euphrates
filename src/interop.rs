@@ -101,10 +101,10 @@ impl TnEGame {
     const H: usize = H;
 
     #[classattr]
-    const N_CHANNELS: usize = Plane::Last as usize - 1;
+    const N_CHANNELS: usize = Plane::Last as usize;
 
     #[classattr]
-    const N_ACTIONS: usize = 11 * 16 * 11 + 6 + 7 + 4 + 1;
+    const N_ACTIONS: usize = 11 * H * W + 6 + 1 + 7 + 4 + 1;
 
     #[pyo3(name="invalid_actions")]
     fn invalid_actions<'py>(&self, py: Python<'py>) -> &'py PyArray1<u8> {
