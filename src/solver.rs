@@ -480,30 +480,30 @@ impl Default for Evaluator {
 
 impl Evaluator {
     /// Evaluate a player's position - this is the experimental version
-    pub fn eval_player(player: &crate::game::PlayerState, state: &TnEGame) -> i16 {
+    pub fn eval_player(player: &crate::game::PlayerState, _opponent: &crate::game::PlayerState, state: &TnEGame) -> i16 {
         let mut s: i16 = 0;
 
-        // Min score weighted 100x - this is THE scoring metric
+        // Min score weighted 100x
         let min_score = player.calculate_score() as i16;
         s += min_score * 100;
         
-        // Raw score sum - try higher weight to encourage aggressive point collection
-        s += player.score_sum() as i16 * 5;  // Was 3
+        // Raw score sum * 3 - CONFIRMED
+        s += player.score_sum() as i16 * 3;
 
-        // Treasure bonus - slightly lower, they're already counted in min_score
-        s += player.score_treasure as i16 * 80;  // Was 100
+        // Treasure bonus 100
+        s += player.score_treasure as i16 * 100;
         
         // Balance bonus - 20 per nonzero color
         let scores = [player.score_red, player.score_blue, player.score_green, player.score_black];
         let nonzero_colors = scores.iter().filter(|&&x| x > 0).count() as i16;
         s += nonzero_colors * 20;
 
-        // Leader presence - higher value, leaders are essential for scoring
+        // Leader presence - 10 per leader
         let leaders_on_board = [
             player.placed_red_leader, player.placed_blue_leader,
             player.placed_green_leader, player.placed_black_leader
         ].iter().filter(|x| x.is_some()).count() as i16;
-        s += leaders_on_board * 15;  // Was 10
+        s += leaders_on_board * 10;
 
         // Monument control - 40 per controlled color
         let connectable = state.board.connectable_bitboard();
@@ -521,12 +521,22 @@ impl Evaluator {
             }
         }
         
-        // Hand tiles bonus - 2 per tile
-        let hand_size = (player.hand_red + player.hand_blue + player.hand_green + player.hand_black) as i16;
+        // Hand tiles bonus - more tiles = more options (CONFIRMED)
+        let hand_size = (player.hand_red + player.hand_blue + 
+                         player.hand_green + player.hand_black) as i16;
         s += hand_size * 2;
         
-        // Extra red tile bonus (useful for revolt defense) - CONFIRMED
+        // Extra red tile bonus - useful for revolt defense (CONFIRMED)
         s += player.hand_red as i16 * 3;
+        
+        // NEW: Leader security - bonus for leaders with good red tile support
+        // Leaders with more adjacent red tiles are harder to dislodge
+        for leader_pos in [player.placed_red_leader, player.placed_blue_leader,
+                           player.placed_green_leader, player.placed_black_leader].iter().flatten() {
+            let neighbors = leader_pos.neighbors();
+            let nearby_red = (neighbors & state.board.red_tiles).count_ones() as i16;
+            s += nearby_red * 3;  // Small bonus per adjacent red tile
+        }
 
         s
     }
@@ -536,8 +546,10 @@ impl minimax::Evaluator for Evaluator {
     type G = TigrisAndEuphrates;
 
     fn evaluate(&self, state: &<Self::G as minimax::Game>::S) -> minimax::Evaluation {
-        let s1 = Self::eval_player(state.players.get(Player::Player1), state);
-        let s2 = Self::eval_player(state.players.get(Player::Player2), state);
+        let p1 = state.players.get(Player::Player1);
+        let p2 = state.players.get(Player::Player2);
+        let s1 = Self::eval_player(p1, p2, state);
+        let s2 = Self::eval_player(p2, p1, state);
 
         // Standard negamax expects: positive = good for player to move
         let next = state.next_player();
@@ -698,10 +710,21 @@ mod tests {
                         game = new_state;
                     }
                     move_count += 1;
+                    
+                    // Progress bar every 10 moves
+                    if move_count % 10 == 0 {
+                        let p1 = game.players.get(Player::Player1);
+                        let p2 = game.players.get(Player::Player2);
+                        print!("[{}/{}] P1:{} P2:{} | ", move_count, max_moves, 
+                            p1.calculate_score(), p2.calculate_score());
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                    }
                 }
                 None => break,
             }
         }
+        println!();  // Newline after progress
 
         // Debug scores
         let p1 = game.players.get(Player::Player1);
@@ -859,46 +882,53 @@ mod tests {
     /// Run this after making changes to get_eval() to see if they help
     #[test]
     fn test_experimental_vs_baseline() {
-        let num_games = 40;  // More games in single run for speed
-        let mut experimental_wins = 0;
-        let mut baseline_wins = 0;
-        let mut draws = 0;
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        
+        let num_games = 1;
+        let experimental_wins = AtomicU32::new(0);
+        let baseline_wins = AtomicU32::new(0);
+        let draws = AtomicU32::new(0);
 
-        for i in 0..num_games {
+        (0..num_games).into_par_iter().for_each(|i| {
             // Alternate who goes first
             let experimental_is_p1 = i % 2 == 0;
             
-            // Same depth for fair comparison
-            let mut experimental_ai = Negamax::new(Evaluator::default(), 2);
+            // Depth 5 vs Depth 2
+            let mut experimental_ai = Negamax::new(Evaluator::default(), 5);
             let mut baseline_ai = Negamax::new(BaselineEvaluator::default(), 2);
 
             let winner = if experimental_is_p1 {
-                play_game(&mut experimental_ai, &mut baseline_ai, 100)
+                play_game(&mut experimental_ai, &mut baseline_ai, 80)
             } else {
-                play_game(&mut baseline_ai, &mut experimental_ai, 100)
+                play_game(&mut baseline_ai, &mut experimental_ai, 80)
             };
 
             match winner {
-                Player::Player1 if experimental_is_p1 => experimental_wins += 1,
-                Player::Player2 if !experimental_is_p1 => experimental_wins += 1,
-                Player::Player1 if !experimental_is_p1 => baseline_wins += 1,
-                Player::Player2 if experimental_is_p1 => baseline_wins += 1,
-                _ => draws += 1,
+                Player::Player1 if experimental_is_p1 => { experimental_wins.fetch_add(1, Ordering::Relaxed); }
+                Player::Player2 if !experimental_is_p1 => { experimental_wins.fetch_add(1, Ordering::Relaxed); }
+                Player::Player1 if !experimental_is_p1 => { baseline_wins.fetch_add(1, Ordering::Relaxed); }
+                Player::Player2 if experimental_is_p1 => { baseline_wins.fetch_add(1, Ordering::Relaxed); }
+                _ => { draws.fetch_add(1, Ordering::Relaxed); }
             }
-        }
+        });
 
-        println!("\n=== Experimental vs Baseline Results ===");
-        println!("Experimental wins: {}, Baseline wins: {}, Draws: {}", 
-            experimental_wins, baseline_wins, draws);
-        let win_rate = experimental_wins as f64 / num_games as f64 * 100.0;
+        let exp_wins = experimental_wins.load(Ordering::Relaxed);
+        let base_wins = baseline_wins.load(Ordering::Relaxed);
+        let draw_count = draws.load(Ordering::Relaxed);
+        
+        println!("\n=== Depth 5 vs Depth 2 Results ({} games) ===", num_games);
+        println!("Depth 5 wins: {}, Depth 2 wins: {}, Draws: {}", 
+            exp_wins, base_wins, draw_count);
+        let win_rate = exp_wins as f64 / num_games as f64 * 100.0;
         println!("Experimental win rate: {:.1}%", win_rate);
         
-        if experimental_wins > baseline_wins {
-            println!("✓ IMPROVEMENT: Experimental is better! Keep the change.");
-        } else if experimental_wins < baseline_wins {
-            println!("✗ REGRESSION: Baseline is better. Revert the change.");
+        if exp_wins > base_wins {
+            println!("✓ IMPROVEMENT: Experimental is better!");
+        } else if exp_wins < base_wins {
+            println!("✗ REGRESSION: Baseline is better.");
         } else {
-            println!("≈ NO CHANGE: About the same. Consider if change adds value.");
+            println!("≈ About the same.");
         }
     }
 

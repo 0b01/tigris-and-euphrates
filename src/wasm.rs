@@ -485,7 +485,7 @@ impl TnEWeb {
     pub fn new() -> TnEWeb {
         TnEWeb {
             game: TnEGame::new(),
-            ai_depth: 3,
+            ai_depth: 5,
         }
     }
 

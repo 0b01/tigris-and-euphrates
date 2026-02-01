@@ -443,8 +443,8 @@ async fn run_history(history: Vec<TnEGame>) {
 
 async fn run(mut game: TnEGame, self_play: bool) {
     let mut ui = GameUIState::new().await;
-    // Use Negamax with depth 4 for stronger play
-    let mut ai_strategy = Negamax::new(Evaluator::default(), 4);
+    // Use Negamax with depth 5 for stronger play
+    let mut ai_strategy = Negamax::new(Evaluator::default(), 5);
     
     // Move counter for limiting self-play games
     let mut move_count = 0;
@@ -653,7 +653,13 @@ async fn run(mut game: TnEGame, self_play: bool) {
 
             fn calculate_score(game: &TnEGame, p: Player) -> (i16, u8) {
                 let player_state = game.players.get(p);
-                (crate::solver::Evaluator::eval_player(player_state, game), player_state.calculate_score())
+                let opponent = match p {
+                    Player::Player1 => Player::Player2,
+                    Player::Player2 => Player::Player1,
+                    Player::None => unreachable!(),
+                };
+                let opponent_state = game.players.get(opponent);
+                (crate::solver::Evaluator::eval_player(player_state, opponent_state, game), player_state.calculate_score())
             }
 
             let (e1, s1) = calculate_score(&game, Player::Player1);
